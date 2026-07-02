@@ -1,0 +1,15 @@
+.env
+.git
+.gitignore
+*.wav
+*.mp3
+*.flac
+__pycache__
+*.py[cod]
+.venv
+venv
+.pytest_cache
+.mypy_cache
+*.log
+docker-compose*.yml
+README.md

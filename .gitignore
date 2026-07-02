@@ -1,0 +1,15 @@
+.env
+*.wav
+*.mp3
+*.flac
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.cache/
+.pytest_cache/
+.mypy_cache/
+*.log
+models/
+weights/

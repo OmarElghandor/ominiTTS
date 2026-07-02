@@ -1,0 +1,22 @@
+services:
+  omnivoice-api:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - omnivoice-model-cache:/data/huggingface
+    restart: unless-stopped
+    # GPU reservation (local dev only — requires Docker Compose + nvidia-container-toolkit).
+    # Railway provisions GPUs via its own platform plans; this block is NOT used on Railway.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  omnivoice-model-cache:
