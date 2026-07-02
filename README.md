@@ -40,7 +40,6 @@ Re-run bootstrap only when intentionally upgrading to a newer OmniVoice checkpoi
 ```bash
 cd omnivoice-service
 cp .env.example .env
-# Edit .env — set API_KEY to a random secret
 ```
 
 ### 1. Bootstrap model weights (one-time)
@@ -89,10 +88,11 @@ If no GPU is detected at startup, the service logs a warning and falls back to C
 
 ### Health checks
 
-| Endpoint | Auth | Meaning |
-|----------|------|---------|
-| `GET /healthz` | None | Process is up (returns 200 even while model is loading) |
-| `GET /readyz` | None | Model finished loading (503 until ready) |
+| Endpoint | Meaning |
+|----------|---------|
+| `GET /healthz` | Process is up (returns 200 even while model is loading) |
+| `GET /readyz` | Model finished loading (503 until ready) |
+| `POST /v1/tts/*` | TTS synthesis (no auth — internal/trusted network only) |
 
 ```bash
 curl http://localhost:8080/healthz
@@ -107,13 +107,9 @@ Interactive API docs: `http://localhost:8080/docs`
 
 ## API contract
 
-All `/v1/tts/*` routes require the `X-API-Key` header matching the `API_KEY` environment variable. Missing or wrong keys return **401**:
+All endpoints are unauthenticated — intended for internal service-to-service use on a trusted network (e.g. Railway private networking or your backend only).
 
-```json
-{"message": "Invalid or missing API key"}
-```
-
-Successful responses return **24 kHz mono WAV** (`Content-Type: audio/wav`).
+Successful TTS responses return **24 kHz mono WAV** (`Content-Type: audio/wav`).
 
 All error responses (non-audio) return JSON with a `message` field.
 
@@ -181,7 +177,6 @@ No reference audio or voice description — the model picks a voice.
 
 ```bash
 curl -X POST http://localhost:8080/v1/tts/auto \
-  -H "X-API-Key: your-secret-key" \
   -H "Content-Type: application/json" \
   -d '{"text": "Hello from OmniVoice."}' \
   --output out.wav
@@ -193,7 +188,6 @@ curl -X POST http://localhost:8080/v1/tts/auto \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `API_KEY` | *(required)* | Shared secret for `X-API-Key` header — generate fresh, never reuse |
 | `MODEL_NAME` | `k2-fsa/OmniVoice` | HF repo id — **bootstrap script only**, not used at API runtime |
 | `MODEL_STORE_DIR` | `/data/omnivoice-model` | Local path to self-hosted weights (must match volume mount) |
 | `DEVICE` | `cuda:0` | Inference device (`cpu` on CPU-only hosts) |
@@ -241,7 +235,6 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 
    | Variable | Value |
    |----------|-------|
-   | `API_KEY` | Generate a new random secret |
    | `MODEL_STORE_DIR` | `/data/omnivoice-model` |
    | `DEVICE` | `cpu` (until GPU plans exist elsewhere use RunPod) |
    | `HF_HUB_OFFLINE` | `1` |
@@ -263,7 +256,7 @@ Restarting/redeploying the API container makes **zero network calls to huggingfa
 
 - **Single uvicorn worker** — the GPU model is loaded once into VRAM/RAM; multiple workers would each load a separate copy. Concurrency requires a request queue (not implemented).
 - **No built-in request queueing** — concurrent requests share one model instance.
-- **Shared API key only** — suitable for internal service-to-service calls, not direct client exposure.
+- **No authentication** — do not expose the public domain to the open internet without a gateway in front.
 - **24 kHz output only** — no resampling unless the caller handles it downstream.
 - **CPU inference is slow** — acceptable for testing; production needs GPU hardware.
 - **Bootstrap is manual** — the API never downloads weights; an empty volume prevents startup.
@@ -279,7 +272,6 @@ omnivoice-service/
 │   ├── tts.py               # OmniVoice wrapper (singleton model)
 │   ├── schemas.py           # Pydantic request/response models
 │   ├── config.py            # Environment-driven settings
-│   └── auth.py              # X-API-Key verification
 ├── scripts/
 │   └── bootstrap_model.py   # One-time HF weight download (not used at API runtime)
 ├── Dockerfile

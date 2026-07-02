@@ -6,12 +6,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import torch
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from app.auth import verify_api_key
 from app.config import get_settings
 from app.schemas import AutoRequest, CloneRequest, DesignRequest, HealthResponse
 from app import tts
@@ -158,7 +157,7 @@ async def readyz() -> HealthResponse | JSONResponse:
     return payload
 
 
-@app.post("/v1/tts/clone", dependencies=[Depends(verify_api_key)])
+@app.post("/v1/tts/clone")
 async def tts_clone(request: Request):
     _require_model_ready()
     content_type = request.headers.get("content-type", "")
@@ -214,7 +213,7 @@ async def tts_clone(request: Request):
     return _audio_response(wav_bytes)
 
 
-@app.post("/v1/tts/design", dependencies=[Depends(verify_api_key)])
+@app.post("/v1/tts/design")
 async def tts_design(body: DesignRequest):
     _require_model_ready()
     _validate_text_length(body.text)
@@ -231,7 +230,7 @@ async def tts_design(body: DesignRequest):
     return _audio_response(wav_bytes)
 
 
-@app.post("/v1/tts/auto", dependencies=[Depends(verify_api_key)])
+@app.post("/v1/tts/auto")
 async def tts_auto(body: AutoRequest):
     _require_model_ready()
     _validate_text_length(body.text)

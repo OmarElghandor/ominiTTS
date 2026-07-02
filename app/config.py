@@ -3,7 +3,6 @@ import os
 from functools import lru_cache
 
 import torch
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -18,12 +17,6 @@ class Settings(BaseSettings):
     HF_HOME: str = "/data/huggingface"
     MAX_TEXT_LENGTH: int = 500
     PORT: int = 8080
-    API_KEY: str = ""
-
-    @field_validator("API_KEY", mode="before")
-    @classmethod
-    def strip_api_key(cls, v: object) -> str:
-        return str(v).strip() if v is not None else ""
 
     def configure_hf_home(self) -> None:
         os.environ["HF_HOME"] = self.HF_HOME
