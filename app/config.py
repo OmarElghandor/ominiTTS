@@ -6,6 +6,8 @@ from pathlib import Path
 import torch
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.model_store import assert_model_store_verified
+
 logger = logging.getLogger(__name__)
 
 MODEL_STORE_EMPTY_MSG = (
@@ -37,6 +39,7 @@ class Settings(BaseSettings):
         store = self.resolve_model_path()
         if not store.is_dir() or not self.model_store_has_content():
             raise RuntimeError(MODEL_STORE_EMPTY_MSG)
+        assert_model_store_verified(store)
 
     def assert_offline_mode(self) -> None:
         hf_offline = os.environ.get("HF_HUB_OFFLINE", "")

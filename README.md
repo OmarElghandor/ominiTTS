@@ -18,6 +18,8 @@ This service is the **self-hosted tier** in Langify's TTS architecture:
 
 Production containers **never contact huggingface.co**. Weights are downloaded once via `scripts/bootstrap_model.py` into a persistent volume (`MODEL_STORE_DIR`), then the API loads exclusively from that local path with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`.
 
+The bootstrap script uses `snapshot_download(local_dir=...)` so files land **flat** at the volume root (`config.json`, `model.safetensors`, `tokenizer.json`, `audio_tokenizer/`, etc.). Do **not** use `cache_dir` — that creates a nested `models--k2-fsa--OmniVoice/snapshots/...` layout that `OmniVoice.from_pretrained(local_path)` cannot read.
+
 ```
   [One-time]  bootstrap_model.py  ──►  MODEL_STORE_DIR (volume)
                                               │
@@ -61,6 +63,8 @@ MODEL_STORE_DIR=./model-store python scripts/bootstrap_model.py
 ```
 
 If Hugging Face is slow or blocked from your network, set `HF_ENDPOINT` (e.g. `https://hf-mirror.com`) for the bootstrap step only.
+
+On success, bootstrap prints total on-disk size (~3.27 GB) and a top-level file listing. It verifies `config.json`, `model.safetensors`, tokenizer files, and `audio_tokenizer/{config.json, model.safetensors}` before declaring success. Re-running against a valid store is safe — it skips the download and reprints the summary.
 
 ### 2. Run the API
 
@@ -219,15 +223,17 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
    - Command Palette (`⌘K` / `Ctrl+K`) → **Create Volume**
    - Attach to the OmniVoice service
    - Mount path: `/data/omnivoice-model` (recommended) or any absolute path — if you omit `MODEL_STORE_DIR`, the service auto-uses Railway's `RAILWAY_VOLUME_MOUNT_PATH`
-4. **Seed the volume once** (before the API can start — empty `MODEL_STORE_DIR` fails fast):
+4. **Seed the volume once** (before the API can start — empty or invalid `MODEL_STORE_DIR` fails fast):
 
    ```bash
-   railway run python scripts/bootstrap_model.py
+   railway run --service <service-name> python scripts/bootstrap_model.py
    ```
 
    Bootstrap requires network access. The script clears offline flags internally. Override `HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0` in the shell if needed.
 
-   Re-run bootstrap only when upgrading checkpoints, not on normal deploys.
+   Confirm the script prints **Bootstrap complete** with total size ~3.27 GB and top-level files (`config.json`, `model.safetensors`, `audio_tokenizer/`, etc.) — not a `models--k2-fsa--OmniVoice` cache folder.
+
+   Re-run bootstrap only when upgrading checkpoints or repairing a broken/partial download, not on normal deploys.
 
 5. **Set environment variables** in the Railway dashboard:
 
@@ -243,14 +249,15 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 
 ### Post-deploy verification
 
-1. Run the bootstrap script once against the Railway volume and confirm it reports files written to `MODEL_STORE_DIR`:
+1. **Bootstrap** (if not already done, or to repair a broken volume):
    ```bash
-   railway run python scripts/bootstrap_model.py
+   railway run --service <service-name> python scripts/bootstrap_model.py
    ```
-2. Redeploy `omnivoice-api`.
-3. Check logs for the **offline mode active** line, **no** `huggingface_hub` download activity, and successful model load.
-4. `GET /readyz` — should return 200 once load completes.
-5. Send one synthesis request end-to-end:
+   Expect **Bootstrap complete**, total size ~3.27 GB, and flat top-level files — no `models--*` nesting.
+2. **Redeploy** `omnivoice-api`.
+3. **Logs** — look for the **offline mode active** line, **no** `huggingface_hub` download activity, and successful model load (no `OSError` about missing `model.safetensors`).
+4. **`GET /readyz`** — should return 200 once load completes.
+5. **End-to-end TTS**:
    ```bash
    curl -X POST https://<your-railway-host>/v1/tts/auto \
      -H "Content-Type: application/json" \
@@ -267,7 +274,7 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 
 **To change an existing volume mount path** (e.g. migrate `/data/huggingface` → `/data/omnivoice-model`):
 1. Service → **Settings** → **Volumes** → edit mount path (or `railway volume update --volume <name> --mount-path /data/omnivoice-model`)
-2. Re-run `railway run python scripts/bootstrap_model.py` — data at the old path is not visible after remounting
+2. Re-run `railway run --service <service-name> python scripts/bootstrap_model.py` — data at the old path is not visible after remounting
 
 **Deploy error:** *"requires a volume to be mounted at /data/omnivoice-model"* — caused by a stale `requiredMountPath` in `railway.json`. Current config no longer enforces a fixed path; redeploy after pulling latest, or update your volume mount / `MODEL_STORE_DIR` to match.
 
@@ -298,6 +305,7 @@ omnivoice-service/
 ├── app/
 │   ├── main.py              # FastAPI routes, lifespan, exception handlers
 │   ├── tts.py               # OmniVoice wrapper (singleton model)
+│   ├── model_store.py       # Shared MODEL_STORE_DIR layout verification
 │   ├── schemas.py           # Pydantic request/response models
 │   ├── config.py            # Environment-driven settings
 ├── scripts/

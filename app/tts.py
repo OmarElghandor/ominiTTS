@@ -11,6 +11,7 @@ import torch
 from omnivoice import OmniVoice
 
 from app.config import Settings
+from app.model_store import assert_model_store_verified
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,9 @@ def load_model(settings: Settings) -> None:
     _resolved_device = resolved_device
 
     settings.assert_model_store_ready()
-    model_path = str(settings.resolve_model_path())
+    model_path = settings.resolve_model_path()
+    assert_model_store_verified(model_path)
+    model_path = str(model_path)
     logger.info(
         "Loading OmniVoice from local store %s on device=%s dtype=%s",
         model_path,
