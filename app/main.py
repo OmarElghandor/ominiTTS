@@ -64,8 +64,8 @@ def _require_model_ready() -> None:
             status_code=503,
             detail={
                 "message": (
-                    "Model is still loading. First boot downloads multi-GB weights and can take "
-                    "10–30+ minutes on CPU. Poll GET /readyz until model_loaded is true."
+                    "Model is still loading from MODEL_STORE_DIR. Poll GET /readyz until "
+                    "model_loaded is true."
                 ),
             },
         )
@@ -104,7 +104,8 @@ def _suffix_from_upload(filename: str | None) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    settings.configure_hf_home()
+    settings.assert_offline_mode()
+    settings.assert_model_store_ready()
     tts.initialize_device(settings)
 
     async def _load():
@@ -113,9 +114,8 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.error(
                 "Background model load failed — /readyz will report load_error. "
-                "HF_HOME=%s MODEL_NAME=%s",
-                settings.HF_HOME,
-                settings.MODEL_NAME,
+                "MODEL_STORE_DIR=%s",
+                settings.MODEL_STORE_DIR,
             )
 
     load_task = asyncio.create_task(_load())

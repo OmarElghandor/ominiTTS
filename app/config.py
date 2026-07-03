@@ -8,33 +8,48 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
+MODEL_STORE_EMPTY_MSG = (
+    "MODEL_STORE_DIR is empty — run the bootstrap script against this volume "
+    "before starting the API service"
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     MODEL_NAME: str = "k2-fsa/OmniVoice"
+    MODEL_STORE_DIR: str = "/data/omnivoice-model"
     DEVICE: str = "cuda:0"
     DTYPE: str | None = None
-    HF_HOME: str = "/data/huggingface"
     MAX_TEXT_LENGTH: int = 500
     PORT: int = 8080
 
-    def configure_hf_home(self) -> None:
-        os.environ["HF_HOME"] = self.HF_HOME
-        os.environ.setdefault("HF_HUB_CACHE", str(Path(self.HF_HOME) / "hub"))
-        try:
-            Path(self.HF_HOME).mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise RuntimeError(
-                f"Cannot create HF_HOME at '{self.HF_HOME}'. "
-                "Check volume mount and set RAILWAY_RUN_UID=0 on Railway if needed."
-            ) from exc
+    def resolve_model_path(self) -> Path:
+        return Path(self.MODEL_STORE_DIR).resolve()
 
-    def hf_cache_has_content(self) -> bool:
-        cache = Path(self.HF_HOME)
-        if not cache.is_dir():
+    def model_store_has_content(self) -> bool:
+        store = self.resolve_model_path()
+        if not store.is_dir():
             return False
-        return any(cache.rglob("*"))
+        return any(store.rglob("*"))
+
+    def assert_model_store_ready(self) -> None:
+        store = self.resolve_model_path()
+        if not store.is_dir() or not self.model_store_has_content():
+            raise RuntimeError(MODEL_STORE_EMPTY_MSG)
+
+    def assert_offline_mode(self) -> None:
+        hf_offline = os.environ.get("HF_HUB_OFFLINE", "")
+        transformers_offline = os.environ.get("TRANSFORMERS_OFFLINE", "")
+        if hf_offline != "1" or transformers_offline != "1":
+            raise RuntimeError(
+                "HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE must both be set to 1 in production. "
+                f"Got HF_HUB_OFFLINE={hf_offline!r} TRANSFORMERS_OFFLINE={transformers_offline!r}"
+            )
+        logger.info(
+            "Offline mode active: HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 — "
+            "API will not contact huggingface.co"
+        )
 
     def resolve_device_and_dtype(self) -> tuple[str, torch.dtype]:
         requested_device = self.DEVICE.strip()
@@ -66,6 +81,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    settings = Settings()
-    settings.configure_hf_home()
-    return settings
+    return Settings()

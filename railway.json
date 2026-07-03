@@ -1,5 +1,6 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
+  "$comment": "Set RAILWAY_RUN_UID=0 in the Railway dashboard for omnivoice-api — volumes mount as root and the entrypoint must chown MODEL_STORE_DIR before dropping to appuser.",
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "Dockerfile"
@@ -9,6 +10,6 @@
     "healthcheckTimeout": 600,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5,
-    "requiredMountPath": "/data/huggingface"
+    "requiredMountPath": "/data/omnivoice-model"
   }
 }

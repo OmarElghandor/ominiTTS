@@ -47,18 +47,16 @@ cp .env.example .env
 Seed the Docker volume before starting the API:
 
 ```bash
-# Install bootstrap deps locally (or use the one-off compose command below)
-pip install -r requirements-bootstrap.txt
-
-# Option A — bootstrap into the compose volume via a one-off container (runs as root for pip)
-docker compose run --rm --user root \
+# Option A — bootstrap into the compose volume via a one-off container
+docker compose run --rm \
   -e HF_HUB_OFFLINE=0 \
   -e TRANSFORMERS_OFFLINE=0 \
   -e MODEL_STORE_DIR=/data/omnivoice-model \
   omnivoice-api \
-  sh -c "pip install -r /app/requirements-bootstrap.txt && python /app/scripts/bootstrap_model.py"
+  python scripts/bootstrap_model.py
 
 # Option B — bootstrap to a local directory, then bind-mount it in compose for dev
+pip install -r requirements-bootstrap.txt
 MODEL_STORE_DIR=./model-store python scripts/bootstrap_model.py
 ```
 
@@ -224,10 +222,10 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 4. **Seed the volume once** (before the API can start — empty `MODEL_STORE_DIR` fails fast):
 
    ```bash
-   # Bootstrap requires network access to Hugging Face — override offline flags for this one-off run
-   railway run -- \
-     sh -c "HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 pip install huggingface_hub && python /app/scripts/bootstrap_model.py"
+   railway run python scripts/bootstrap_model.py
    ```
+
+   Bootstrap requires network access. The script clears offline flags internally. Override `HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0` in the shell if needed.
 
    Re-run bootstrap only when upgrading checkpoints, not on normal deploys.
 
@@ -239,9 +237,31 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
    | `DEVICE` | `cpu` (until GPU plans exist elsewhere use RunPod) |
    | `HF_HUB_OFFLINE` | `1` |
    | `TRANSFORMERS_OFFLINE` | `1` |
+   | `RAILWAY_RUN_UID` | `0` (required — volumes mount as root; entrypoint chowns then drops to `appuser`) |
 
-6. **Volume permissions:** volumes mount as root. The container runs as non-root (`appuser`, UID 1000). Set `RAILWAY_RUN_UID=0` on the service if the app cannot read the volume ([Railway volumes docs](https://docs.railway.com/guides/volumes)).
-7. **Deploy.** `healthcheckTimeout` is 600 s in `railway.json` for cold model load. Poll `/readyz` before routing traffic.
+6. **Deploy.** `healthcheckTimeout` is 600 s in `railway.json` for cold model load. Poll `/readyz` before routing traffic.
+
+### Post-deploy verification
+
+1. Run the bootstrap script once against the Railway volume and confirm it reports files written to `MODEL_STORE_DIR`:
+   ```bash
+   railway run python scripts/bootstrap_model.py
+   ```
+2. Redeploy `omnivoice-api`.
+3. Check logs for the **offline mode active** line, **no** `huggingface_hub` download activity, and successful model load.
+4. `GET /readyz` — should return 200 once load completes.
+5. Send one synthesis request end-to-end:
+   ```bash
+   curl -X POST https://<your-railway-host>/v1/tts/auto \
+     -H "Content-Type: application/json" \
+     -d '{"text": "Hello from OmniVoice."}' \
+     --output out.wav
+   ```
+   Confirm `out.wav` is playable before declaring the deployment done.
+
+### Volume migration
+
+If a volume was previously mounted at `/data/huggingface`, update the mount path in the Railway dashboard to `/data/omnivoice-model` and re-run bootstrap — the old path will be empty from the container's perspective.
 
 ### Cold start behavior
 

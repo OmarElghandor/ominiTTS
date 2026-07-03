@@ -4,6 +4,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import soundfile as sf
 import torch
@@ -18,6 +19,10 @@ _model_ready: bool = False
 _model_loading: bool = False
 _load_error: str | None = None
 _resolved_device: str = "cpu"
+
+_HF_DOWNLOAD_GUARD_MSG = (
+    "HF download attempted in API process — run bootstrap_model.py against MODEL_STORE_DIR"
+)
 
 
 def is_model_ready() -> bool:
@@ -42,6 +47,10 @@ def _set_load_error(message: str) -> None:
     _model_loading = False
 
 
+def _block_hf_download(*_args, **_kwargs):
+    raise RuntimeError(_HF_DOWNLOAD_GUARD_MSG)
+
+
 def initialize_device(settings: Settings) -> None:
     global _resolved_device
     resolved_device, _ = settings.resolve_device_and_dtype()
@@ -61,29 +70,23 @@ def load_model(settings: Settings) -> None:
     resolved_device, resolved_dtype = settings.resolve_device_and_dtype()
     _resolved_device = resolved_device
 
-    cache_dir = Path(settings.HF_HOME)
+    settings.assert_model_store_ready()
+    model_path = str(settings.resolve_model_path())
     logger.info(
-        "Loading OmniVoice model '%s' on device=%s dtype=%s (cache=%s)",
-        settings.MODEL_NAME,
+        "Loading OmniVoice from local store %s on device=%s dtype=%s",
+        model_path,
         resolved_device,
         resolved_dtype,
-        cache_dir,
     )
 
-    if not settings.hf_cache_has_content():
-        logger.warning(
-            "HF cache at %s looks empty — first load will download multi-GB weights from "
-            "Hugging Face. This can take 10–30+ minutes on CPU. Check /readyz before calling TTS.",
-            cache_dir,
-        )
-
     try:
-        _model = OmniVoice.from_pretrained(
-            settings.MODEL_NAME,
-            device_map=resolved_device,
-            dtype=resolved_dtype,
-            load_asr=True,
-        )
+        with patch("huggingface_hub.snapshot_download", side_effect=_block_hf_download):
+            _model = OmniVoice.from_pretrained(
+                model_path,
+                device_map=resolved_device,
+                dtype=resolved_dtype,
+                load_asr=False,
+            )
         _model_ready = True
         _model_loading = False
         logger.info("OmniVoice model loaded successfully (sample_rate=%s)", _model.sampling_rate)
@@ -157,7 +160,8 @@ def synthesize_clone(
 
     if ref_text is None:
         logger.warning(
-            "ref_text omitted for voice cloning — OmniVoice will auto-transcribe via Whisper (slower)"
+            "ref_text omitted for voice cloning — auto-transcription requires ASR "
+            "(load_asr=False in offline API; provide ref_text for clone requests)"
         )
 
     with _temp_audio_file(ref_audio_bytes, suffix=ref_audio_suffix) as ref_path:

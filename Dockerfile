@@ -32,7 +32,9 @@ FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
-    HF_HOME=/data/huggingface \
+    MODEL_STORE_DIR=/data/omnivoice-model \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
     PORT=8080 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -41,22 +43,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
     libsndfile1 \
     curl \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
 
+COPY requirements-bootstrap.txt /tmp/requirements-bootstrap.txt
+RUN pip install -r /tmp/requirements-bootstrap.txt
+
 WORKDIR /app
 COPY app/ /app/app/
+COPY scripts/ /app/scripts/
+COPY entrypoint.sh /entrypoint.sh
 
 RUN useradd -m -u 1000 appuser && \
-    mkdir -p /data/huggingface && \
-    chown -R appuser:appuser /app /data/huggingface
-
-USER appuser
+    mkdir -p /data/omnivoice-model && \
+    chown -R appuser:appuser /app /data/omnivoice-model && \
+    chmod +x /entrypoint.sh
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f "http://localhost:${PORT}/healthz" || exit 1
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]

@@ -5,8 +5,12 @@ services:
       - "8080:8080"
     env_file:
       - .env
+    environment:
+      MODEL_STORE_DIR: /data/omnivoice-model
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     volumes:
-      - omnivoice-model-cache:/data/huggingface
+      - omnivoice-model-cache:/data/omnivoice-model
     restart: unless-stopped
     # GPU reservation (local dev only — requires Docker Compose + nvidia-container-toolkit).
     # Railway provisions GPUs via its own platform plans; this block is NOT used on Railway.
