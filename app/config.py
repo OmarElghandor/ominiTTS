@@ -79,6 +79,22 @@ class Settings(BaseSettings):
         return resolved_device, resolved_dtype
 
 
+def _resolve_model_store_dir(settings: Settings) -> str:
+    if "MODEL_STORE_DIR" in os.environ:
+        return settings.MODEL_STORE_DIR
+    if mount := os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
+        return mount
+    return settings.MODEL_STORE_DIR
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    resolved = _resolve_model_store_dir(settings)
+    if resolved != settings.MODEL_STORE_DIR:
+        logger.info(
+            "MODEL_STORE_DIR not set — using RAILWAY_VOLUME_MOUNT_PATH=%s",
+            resolved,
+        )
+        settings.MODEL_STORE_DIR = resolved
+    return settings

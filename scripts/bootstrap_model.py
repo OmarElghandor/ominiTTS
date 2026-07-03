@@ -20,7 +20,11 @@ os.environ["TRANSFORMERS_OFFLINE"] = "0"
 from huggingface_hub import snapshot_download  # noqa: E402
 
 MODEL_NAME = os.environ.get("MODEL_NAME", "k2-fsa/OmniVoice")
-MODEL_STORE_DIR = Path(os.environ.get("MODEL_STORE_DIR", "/data/omnivoice-model"))
+MODEL_STORE_DIR = Path(
+    os.environ.get("MODEL_STORE_DIR")
+    or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    or "/data/omnivoice-model"
+)
 AUDIO_TOKENIZER_REPO = "eustlb/higgs-audio-v2-tokenizer"
 AUDIO_TOKENIZER_DIR = MODEL_STORE_DIR / "audio_tokenizer"
 

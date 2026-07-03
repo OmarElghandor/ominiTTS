@@ -218,7 +218,7 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 3. **Attach a persistent volume** ([Railway volumes guide](https://docs.railway.com/guides/volumes)):
    - Command Palette (`⌘K` / `Ctrl+K`) → **Create Volume**
    - Attach to the OmniVoice service
-   - Mount path: `/data/omnivoice-model` (must match `MODEL_STORE_DIR`)
+   - Mount path: `/data/omnivoice-model` (recommended) or any absolute path — if you omit `MODEL_STORE_DIR`, the service auto-uses Railway's `RAILWAY_VOLUME_MOUNT_PATH`
 4. **Seed the volume once** (before the API can start — empty `MODEL_STORE_DIR` fails fast):
 
    ```bash
@@ -233,7 +233,7 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 
    | Variable | Value |
    |----------|-------|
-   | `MODEL_STORE_DIR` | `/data/omnivoice-model` |
+   | `MODEL_STORE_DIR` | *(optional)* `/data/omnivoice-model` — omit to auto-detect from `RAILWAY_VOLUME_MOUNT_PATH` |
    | `DEVICE` | `cpu` (until GPU plans exist elsewhere use RunPod) |
    | `HF_HUB_OFFLINE` | `1` |
    | `TRANSFORMERS_OFFLINE` | `1` |
@@ -259,9 +259,17 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
    ```
    Confirm `out.wav` is playable before declaring the deployment done.
 
-### Volume migration
+### Volume mount path
 
-If a volume was previously mounted at `/data/huggingface`, update the mount path in the Railway dashboard to `/data/omnivoice-model` and re-run bootstrap — the old path will be empty from the container's perspective.
+**Existing volume at `/data/huggingface`:** you do not need to remount immediately. Railway injects `RAILWAY_VOLUME_MOUNT_PATH=/data/huggingface` at runtime; the entrypoint, bootstrap script, and API config use that path automatically when `MODEL_STORE_DIR` is unset.
+
+**Recommended (new deployments):** mount at `/data/omnivoice-model` and optionally set `MODEL_STORE_DIR=/data/omnivoice-model` explicitly.
+
+**To change an existing volume mount path** (e.g. migrate `/data/huggingface` → `/data/omnivoice-model`):
+1. Service → **Settings** → **Volumes** → edit mount path (or `railway volume update --volume <name> --mount-path /data/omnivoice-model`)
+2. Re-run `railway run python scripts/bootstrap_model.py` — data at the old path is not visible after remounting
+
+**Deploy error:** *"requires a volume to be mounted at /data/omnivoice-model"* — caused by a stale `requiredMountPath` in `railway.json`. Current config no longer enforces a fixed path; redeploy after pulling latest, or update your volume mount / `MODEL_STORE_DIR` to match.
 
 ### Cold start behavior
 
