@@ -70,3 +70,5 @@ class HealthResponse(BaseModel):
     status: str
     device: str
     model_loaded: bool
+    model_loading: bool = False
+    load_error: str | None = None

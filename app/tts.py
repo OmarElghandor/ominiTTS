@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 _model: OmniVoice | None = None
 _model_ready: bool = False
+_model_loading: bool = False
+_load_error: str | None = None
 _resolved_device: str = "cpu"
 
 
@@ -22,8 +24,22 @@ def is_model_ready() -> bool:
     return _model_ready
 
 
+def is_model_loading() -> bool:
+    return _model_loading
+
+
+def get_load_error() -> str | None:
+    return _load_error
+
+
 def get_resolved_device() -> str:
     return _resolved_device
+
+
+def _set_load_error(message: str) -> None:
+    global _load_error, _model_loading
+    _load_error = message
+    _model_loading = False
 
 
 def initialize_device(settings: Settings) -> None:
@@ -37,26 +53,45 @@ def get_model() -> OmniVoice | None:
 
 
 def load_model(settings: Settings) -> None:
-    global _model, _model_ready, _resolved_device
+    global _model, _model_ready, _model_loading, _load_error, _resolved_device
+
+    _model_loading = True
+    _load_error = None
 
     resolved_device, resolved_dtype = settings.resolve_device_and_dtype()
     _resolved_device = resolved_device
 
+    cache_dir = Path(settings.HF_HOME)
     logger.info(
-        "Loading OmniVoice model '%s' on device=%s dtype=%s",
+        "Loading OmniVoice model '%s' on device=%s dtype=%s (cache=%s)",
         settings.MODEL_NAME,
         resolved_device,
         resolved_dtype,
+        cache_dir,
     )
 
-    _model = OmniVoice.from_pretrained(
-        settings.MODEL_NAME,
-        device_map=resolved_device,
-        dtype=resolved_dtype,
-        load_asr=True,
-    )
-    _model_ready = True
-    logger.info("OmniVoice model loaded successfully (sample_rate=%s)", _model.sampling_rate)
+    if not settings.hf_cache_has_content():
+        logger.warning(
+            "HF cache at %s looks empty — first load will download multi-GB weights from "
+            "Hugging Face. This can take 10–30+ minutes on CPU. Check /readyz before calling TTS.",
+            cache_dir,
+        )
+
+    try:
+        _model = OmniVoice.from_pretrained(
+            settings.MODEL_NAME,
+            device_map=resolved_device,
+            dtype=resolved_dtype,
+            load_asr=True,
+        )
+        _model_ready = True
+        _model_loading = False
+        logger.info("OmniVoice model loaded successfully (sample_rate=%s)", _model.sampling_rate)
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        _set_load_error(message)
+        logger.exception("OmniVoice model load failed")
+        raise
 
 
 def _build_generate_kwargs(

@@ -1,6 +1,7 @@
 import logging
 import os
 from functools import lru_cache
+from pathlib import Path
 
 import torch
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,7 +21,20 @@ class Settings(BaseSettings):
 
     def configure_hf_home(self) -> None:
         os.environ["HF_HOME"] = self.HF_HOME
-        os.makedirs(self.HF_HOME, exist_ok=True)
+        os.environ.setdefault("HF_HUB_CACHE", str(Path(self.HF_HOME) / "hub"))
+        try:
+            Path(self.HF_HOME).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot create HF_HOME at '{self.HF_HOME}'. "
+                "Check volume mount and set RAILWAY_RUN_UID=0 on Railway if needed."
+            ) from exc
+
+    def hf_cache_has_content(self) -> bool:
+        cache = Path(self.HF_HOME)
+        if not cache.is_dir():
+            return False
+        return any(cache.rglob("*"))
 
     def resolve_device_and_dtype(self) -> tuple[str, torch.dtype]:
         requested_device = self.DEVICE.strip()

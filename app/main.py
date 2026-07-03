@@ -23,10 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 def _health_payload() -> HealthResponse:
+    load_error = tts.get_load_error()
+    status = "ok" if not load_error else "degraded"
     return HealthResponse(
-        status="ok",
+        status=status,
         device=tts.get_resolved_device(),
         model_loaded=tts.is_model_ready(),
+        model_loading=tts.is_model_loading(),
+        load_error=load_error,
     )
 
 
@@ -42,11 +46,34 @@ def _validate_text_length(text: str) -> None:
 
 
 def _require_model_ready() -> None:
-    if not tts.is_model_ready():
+    if tts.is_model_ready():
+        return
+
+    load_error = tts.get_load_error()
+    if load_error:
         raise HTTPException(
             status_code=503,
-            detail={"message": "Model is still loading. Check /readyz before sending TTS requests."},
+            detail={
+                "message": "Model failed to load. Check Railway logs and /readyz for details.",
+                "load_error": load_error,
+            },
         )
+
+    if tts.is_model_loading():
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": (
+                    "Model is still loading. First boot downloads multi-GB weights and can take "
+                    "10–30+ minutes on CPU. Poll GET /readyz until model_loaded is true."
+                ),
+            },
+        )
+
+    raise HTTPException(
+        status_code=503,
+        detail={"message": "Model is not loaded. Check /readyz and service logs."},
+    )
 
 
 def _audio_response(wav_bytes: bytes) -> Response:
@@ -81,7 +108,15 @@ async def lifespan(app: FastAPI):
     tts.initialize_device(settings)
 
     async def _load():
-        await run_in_threadpool(tts.load_model, settings)
+        try:
+            await run_in_threadpool(tts.load_model, settings)
+        except Exception:
+            logger.error(
+                "Background model load failed — /readyz will report load_error. "
+                "HF_HOME=%s MODEL_NAME=%s",
+                settings.HF_HOME,
+                settings.MODEL_NAME,
+            )
 
     load_task = asyncio.create_task(_load())
     app.state.model_load_task = load_task
