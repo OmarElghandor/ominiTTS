@@ -223,15 +223,27 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
    - Command Palette (`⌘K` / `Ctrl+K`) → **Create Volume**
    - Attach to the OmniVoice service
    - Mount path: `/data/omnivoice-model` (recommended) or any absolute path — if you omit `MODEL_STORE_DIR`, the service auto-uses Railway's `RAILWAY_VOLUME_MOUNT_PATH`
-4. **Seed the volume once** (before the API can start — empty or invalid `MODEL_STORE_DIR` fails fast):
+4. **Seed the volume once** (before the API can start — empty or invalid `MODEL_STORE_DIR` fails fast).
+
+   Railway volumes are only mounted **inside the running container**, so bootstrap must run there — not via `railway run` on your laptop.
+
+   **Option A — `BOOTSTRAP_ONLY` deploy (recommended when the service won't stay up):**
+
+   1. In the Railway dashboard → **ominiTTS** → **Variables**, add:
+      ```
+      BOOTSTRAP_ONLY=1
+      ```
+   2. **Deploy** (or redeploy). Watch **Deploy logs** — expect `Bootstrap complete` with total size ~3.27 GB and flat top-level files (`config.json`, `model.safetensors`, `audio_tokenizer/`, etc.).
+   3. **Remove** `BOOTSTRAP_ONLY` from variables.
+   4. **Redeploy** again — the API starts normally and loads from the volume.
+
+   **Option B — `railway ssh` (when the container is already running):**
 
    ```bash
-   railway run --service <service-name> python scripts/bootstrap_model.py
+   railway ssh --service ominiTTS -- python /app/scripts/bootstrap_model.py
    ```
 
-   Bootstrap requires network access. The script clears offline flags internally. Override `HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0` in the shell if needed.
-
-   Confirm the script prints **Bootstrap complete** with total size ~3.27 GB and top-level files (`config.json`, `model.safetensors`, `audio_tokenizer/`, etc.) — not a `models--k2-fsa--OmniVoice` cache folder.
+   Bootstrap requires network access. The script clears offline flags internally.
 
    Re-run bootstrap only when upgrading checkpoints or repairing a broken/partial download, not on normal deploys.
 
@@ -244,16 +256,16 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
    | `HF_HUB_OFFLINE` | `1` |
    | `TRANSFORMERS_OFFLINE` | `1` |
    | `RAILWAY_RUN_UID` | `0` (required — volumes mount as root; entrypoint chowns then drops to `appuser`) |
+   | `BOOTSTRAP_ONLY` | *(one-time only)* `1` — run bootstrap on deploy instead of starting the API; remove after volume is seeded |
 
 6. **Deploy.** `healthcheckTimeout` is 600 s in `railway.json` for cold model load. Poll `/readyz` before routing traffic.
 
 ### Post-deploy verification
 
 1. **Bootstrap** (if not already done, or to repair a broken volume):
-   ```bash
-   railway run --service <service-name> python scripts/bootstrap_model.py
-   ```
-   Expect **Bootstrap complete**, total size ~3.27 GB, and flat top-level files — no `models--*` nesting.
+   - Set `BOOTSTRAP_ONLY=1`, deploy, confirm **Bootstrap complete** (~3.27 GB), remove the variable, redeploy; **or**
+   - If the service is running: `railway ssh --service ominiTTS -- python /app/scripts/bootstrap_model.py`
+   Expect flat top-level files — no `models--*` nesting.
 2. **Redeploy** `omnivoice-api`.
 3. **Logs** — look for the **offline mode active** line, **no** `huggingface_hub` download activity, and successful model load (no `OSError` about missing `model.safetensors`).
 4. **`GET /readyz`** — should return 200 once load completes.
@@ -274,7 +286,7 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 
 **To change an existing volume mount path** (e.g. migrate `/data/huggingface` → `/data/omnivoice-model`):
 1. Service → **Settings** → **Volumes** → edit mount path (or `railway volume update --volume <name> --mount-path /data/omnivoice-model`)
-2. Re-run `railway run --service <service-name> python scripts/bootstrap_model.py` — data at the old path is not visible after remounting
+2. Re-run bootstrap (`BOOTSTRAP_ONLY=1` deploy, or `railway ssh` if the service is up) — data at the old path is not visible after remounting
 
 **Deploy error:** *"requires a volume to be mounted at /data/omnivoice-model"* — caused by a stale `requiredMountPath` in `railway.json`. Current config no longer enforces a fixed path; redeploy after pulling latest, or update your volume mount / `MODEL_STORE_DIR` to match.
 
