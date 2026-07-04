@@ -1,11 +1,12 @@
 #!/bin/sh
 set -e
 
-# MODEL_STORE_DIR explicit > Railway auto-injected mount path > default
-MODEL_STORE_DIR="${MODEL_STORE_DIR:-${RAILWAY_VOLUME_MOUNT_PATH:-/data/omnivoice-model}}"
+# Railway volume mount path wins when attached (see app/model_store.resolve_model_store_dir)
+MODEL_STORE_DIR="${RAILWAY_VOLUME_MOUNT_PATH:-${MODEL_STORE_DIR:-/data/omnivoice-model}}"
 export MODEL_STORE_DIR
 mkdir -p "$MODEL_STORE_DIR"
 chown -R appuser:appuser "$MODEL_STORE_DIR"
+echo "MODEL_STORE_DIR=${MODEL_STORE_DIR} RAILWAY_VOLUME_MOUNT_PATH=${RAILWAY_VOLUME_MOUNT_PATH:-<unset>}"
 
 # One-time volume seeding on Railway: set BOOTSTRAP_ONLY=1, deploy, wait for success
 # logs, remove the variable, then redeploy normally. Volumes are only mounted at runtime,

@@ -32,7 +32,6 @@ FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
-    MODEL_STORE_DIR=/data/omnivoice-model \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     PORT=8080 \

@@ -3,7 +3,7 @@
 
 Run manually against the persistent volume — never invoked by the API entrypoint.
 
-  railway run python scripts/bootstrap_model.py
+  railway ssh --service ominiTTS -- python /app/scripts/bootstrap_model.py
   MODEL_STORE_DIR=./model-store python scripts/bootstrap_model.py
 """
 
@@ -29,25 +29,33 @@ from app.model_store import (  # noqa: E402
     format_size,
     has_hf_cache_layout,
     list_top_level_entries,
+    resolve_model_store_dir,
     verify_model_store,
+    write_bootstrap_marker,
 )
 
 MODEL_NAME = os.environ.get("MODEL_NAME", "k2-fsa/OmniVoice")
-MODEL_STORE_DIR = Path(
-    os.environ.get("MODEL_STORE_DIR")
-    or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
-    or "/data/omnivoice-model"
-)
 AUDIO_TOKENIZER_REPO = "eustlb/higgs-audio-v2-tokenizer"
-AUDIO_TOKENIZER_DIR = MODEL_STORE_DIR / "audio_tokenizer"
 
 
 def _download_kwargs() -> dict:
-    kwargs: dict = {"local_dir_use_symlinks": False}
+    kwargs: dict = {}
     token = os.environ.get("HF_TOKEN")
     if token:
         kwargs["token"] = token
     return kwargs
+
+
+def _log_store_context(store_dir: Path, label: str) -> None:
+    top_level = list_top_level_entries(store_dir)
+    total = dir_size_bytes(store_dir) if store_dir.is_dir() else 0
+    print(
+        f"{label}\n"
+        f"  MODEL_STORE_DIR:              {store_dir}\n"
+        f"  RAILWAY_VOLUME_MOUNT_PATH:    {os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', '<unset>')}\n"
+        f"  On-disk size:                 {format_size(total)}\n"
+        f"  Top-level ({len(top_level)}):  {', '.join(top_level) if top_level else '<empty>'}"
+    )
 
 
 def _clear_store_contents(store_dir: Path, reason: str) -> None:
@@ -66,14 +74,8 @@ def _clear_store_contents(store_dir: Path, reason: str) -> None:
 
 
 def _print_success_summary(store_dir: Path) -> None:
-    total = dir_size_bytes(store_dir)
-    top_level = list_top_level_entries(store_dir)
-    print(
-        "Bootstrap complete.\n"
-        f"  MODEL_STORE_DIR: {store_dir.resolve()}\n"
-        f"  Total size:      {format_size(total)}\n"
-        f"  Top-level:       {', '.join(top_level)}"
-    )
+    write_bootstrap_marker(store_dir)
+    _log_store_context(store_dir, "Bootstrap complete.")
 
 
 def _fail_verification(store_dir: Path, context: str) -> int:
@@ -81,52 +83,58 @@ def _fail_verification(store_dir: Path, context: str) -> int:
     print(f"ERROR: {context}", file=sys.stderr)
     for error in errors:
         print(f"  - {error}", file=sys.stderr)
+    _log_store_context(store_dir, "Store state after failed verification:")
     return 1
 
 
 def main() -> int:
-    MODEL_STORE_DIR.mkdir(parents=True, exist_ok=True)
-    resolved = MODEL_STORE_DIR.resolve()
+    store_dir = resolve_model_store_dir()
+    store_dir.mkdir(parents=True, exist_ok=True)
 
-    if has_hf_cache_layout(resolved):
+    _log_store_context(store_dir, "Bootstrap starting.")
+
+    if has_hf_cache_layout(store_dir):
         _clear_store_contents(
-            resolved,
+            store_dir,
             "HF cache_dir-style layout detected (models--* subfolders)",
         )
-    elif verify_model_store(resolved):
-        if any(resolved.iterdir()):
+    elif verify_model_store(store_dir):
+        if any(store_dir.iterdir()):
             _clear_store_contents(
-                resolved,
+                store_dir,
                 "incomplete or invalid model store (verification failed)",
             )
     else:
-        print(f"Valid model store already present at {resolved} — skipping download.")
-        _print_success_summary(resolved)
+        print(f"Valid model store already present — skipping download.")
+        _print_success_summary(store_dir)
         return 0
 
-    print(f"Downloading {MODEL_NAME} into {resolved} ...")
+    print(f"Downloading {MODEL_NAME} into {store_dir} ...")
     if endpoint := os.environ.get("HF_ENDPOINT"):
         print(f"Using HF_ENDPOINT mirror: {endpoint}")
 
     snapshot_download(
         repo_id=MODEL_NAME,
-        local_dir=str(resolved),
+        local_dir=str(store_dir),
         **_download_kwargs(),
     )
 
-    if not AUDIO_TOKENIZER_DIR.is_dir() or not (AUDIO_TOKENIZER_DIR / "model.safetensors").is_file():
+    audio_tokenizer_dir = store_dir / "audio_tokenizer"
+    if not audio_tokenizer_dir.is_dir() or not (audio_tokenizer_dir / "model.safetensors").is_file():
         print(f"audio_tokenizer/ missing — downloading {AUDIO_TOKENIZER_REPO} ...")
         snapshot_download(
             repo_id=AUDIO_TOKENIZER_REPO,
-            local_dir=str(AUDIO_TOKENIZER_DIR.resolve()),
+            local_dir=str(audio_tokenizer_dir),
             **_download_kwargs(),
         )
 
-    errors = verify_model_store(resolved)
-    if errors:
-        return _fail_verification(resolved, "post-download verification failed")
+    _log_store_context(store_dir, "Post-download store state:")
 
-    _print_success_summary(resolved)
+    errors = verify_model_store(store_dir)
+    if errors:
+        return _fail_verification(store_dir, "post-download verification failed")
+
+    _print_success_summary(store_dir)
     return 0
 
 

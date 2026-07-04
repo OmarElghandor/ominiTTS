@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+BOOTSTRAP_COMPLETE_MARKER = ".omnivoice-bootstrap-complete"
 
 REQUIRED_RELATIVE_PATHS = (
     "config.json",
@@ -19,9 +22,21 @@ MIN_FILE_BYTES: dict[str, int] = {
 }
 
 BOOTSTRAP_RERUN_MSG = (
-    "MODEL_STORE_DIR failed verification — re-run: "
-    "python scripts/bootstrap_model.py (or railway run python scripts/bootstrap_model.py)"
+    "MODEL_STORE_DIR failed verification — set BOOTSTRAP_ONLY=1 in Railway, deploy, "
+    "wait for 'Bootstrap complete' (~3 GB), remove the variable, then redeploy"
 )
+
+
+def resolve_model_store_dir() -> Path:
+    """Resolve the model store path (must match the Railway volume mount when attached)."""
+    # Railway injects RAILWAY_VOLUME_MOUNT_PATH only when a volume is attached — prefer it
+    # over the Dockerfile default so bootstrap and the API always target the live mount.
+    raw = (
+        os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+        or os.environ.get("MODEL_STORE_DIR")
+        or "/data/omnivoice-model"
+    )
+    return Path(raw).resolve()
 
 
 def format_size(num_bytes: int) -> str:
@@ -73,6 +88,19 @@ def dir_size_bytes(path: Path) -> int:
 
 
 def list_top_level_entries(store_dir: Path) -> list[str]:
+    if not store_dir.is_dir():
+        return []
     return sorted(
         f"{entry.name}/" if entry.is_dir() else entry.name for entry in store_dir.iterdir()
     )
+
+
+def write_bootstrap_marker(store_dir: Path) -> None:
+    (store_dir / BOOTSTRAP_COMPLETE_MARKER).write_text(
+        f"verified ok at {store_dir.resolve()}\n",
+        encoding="utf-8",
+    )
+
+
+def has_bootstrap_marker(store_dir: Path) -> bool:
+    return (store_dir / BOOTSTRAP_COMPLETE_MARKER).is_file()

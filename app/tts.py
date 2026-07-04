@@ -22,7 +22,7 @@ _load_error: str | None = None
 _resolved_device: str = "cpu"
 
 _HF_DOWNLOAD_GUARD_MSG = (
-    "HF download attempted in API process — run bootstrap_model.py against MODEL_STORE_DIR"
+    "HF download attempted in API process — set BOOTSTRAP_ONLY=1 in Railway to seed the volume"
 )
 
 
@@ -68,21 +68,21 @@ def load_model(settings: Settings) -> None:
     _model_loading = True
     _load_error = None
 
-    resolved_device, resolved_dtype = settings.resolve_device_and_dtype()
-    _resolved_device = resolved_device
-
-    settings.assert_model_store_ready()
-    model_path = settings.resolve_model_path()
-    assert_model_store_verified(model_path)
-    model_path = str(model_path)
-    logger.info(
-        "Loading OmniVoice from local store %s on device=%s dtype=%s",
-        model_path,
-        resolved_device,
-        resolved_dtype,
-    )
-
     try:
+        resolved_device, resolved_dtype = settings.resolve_device_and_dtype()
+        _resolved_device = resolved_device
+
+        settings.assert_model_store_ready()
+        model_path = settings.resolve_model_path()
+        assert_model_store_verified(model_path)
+        model_path = str(model_path)
+        logger.info(
+            "Loading OmniVoice from local store %s on device=%s dtype=%s",
+            model_path,
+            resolved_device,
+            resolved_dtype,
+        )
+
         with patch("huggingface_hub.snapshot_download", side_effect=_block_hf_download):
             _model = OmniVoice.from_pretrained(
                 model_path,
@@ -96,8 +96,7 @@ def load_model(settings: Settings) -> None:
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
         _set_load_error(message)
-        logger.exception("OmniVoice model load failed")
-        raise
+        logger.error("OmniVoice model load failed: %s", message)
 
 
 def _build_generate_kwargs(

@@ -227,21 +227,25 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 
    Railway volumes are only mounted **inside the running container**, so bootstrap must run there — not via `railway run` on your laptop.
 
-   **Option A — `BOOTSTRAP_ONLY` deploy (recommended when the service won't stay up):**
+   **Option A — `BOOTSTRAP_ONLY` deploy (required for first-time seeding):**
 
    1. In the Railway dashboard → **ominiTTS** → **Variables**, add:
       ```
       BOOTSTRAP_ONLY=1
       ```
-   2. **Deploy** (or redeploy). Watch **Deploy logs** — expect `Bootstrap complete` with total size ~3.27 GB and flat top-level files (`config.json`, `model.safetensors`, `audio_tokenizer/`, etc.).
+   2. **Deploy** (or redeploy). Watch **Deploy logs** until you see **`Bootstrap complete.`** with on-disk size **~3 GB** and top-level files (`config.json`, `model.safetensors`, `audio_tokenizer/`, etc.).
+      - `Fetching 13 files: 100%` is **not** the finish line — wait for **`Bootstrap complete.`**
+      - The deploy may show **Crashed/Exited** after bootstrap — that is normal; the volume data persists
    3. **Remove** `BOOTSTRAP_ONLY` from variables.
    4. **Redeploy** again — the API starts normally and loads from the volume.
 
-   **Option B — `railway ssh` (when the container is already running):**
+   **Option B — `railway ssh` (only when the API container stays running):**
 
    ```bash
    railway ssh --service ominiTTS -- python /app/scripts/bootstrap_model.py
    ```
+
+   If SSH says *"container is not running"*, use Option A instead.
 
    Bootstrap requires network access. The script clears offline flags internally.
 
@@ -251,7 +255,7 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 
    | Variable | Value |
    |----------|-------|
-   | `MODEL_STORE_DIR` | *(optional)* `/data/omnivoice-model` — omit to auto-detect from `RAILWAY_VOLUME_MOUNT_PATH` |
+   | `MODEL_STORE_DIR` | *(optional)* omit — auto-uses `RAILWAY_VOLUME_MOUNT_PATH` from the attached volume |
    | `DEVICE` | `cpu` (until GPU plans exist elsewhere use RunPod) |
    | `HF_HUB_OFFLINE` | `1` |
    | `TRANSFORMERS_OFFLINE` | `1` |
@@ -289,6 +293,32 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 2. Re-run bootstrap (`BOOTSTRAP_ONLY=1` deploy, or `railway ssh` if the service is up) — data at the old path is not visible after remounting
 
 **Deploy error:** *"requires a volume to be mounted at /data/omnivoice-model"* — caused by a stale `requiredMountPath` in `railway.json`. Current config no longer enforces a fixed path; redeploy after pulling latest, or update your volume mount / `MODEL_STORE_DIR` to match.
+
+### Troubleshooting: common error loop on Railway
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `OSError: no file named model.safetensors` | Volume never seeded or wrong layout (`models--*` cache nesting) | `BOOTSTRAP_ONLY=1` deploy; wait for **`Bootstrap complete.`** ~3 GB |
+| `missing: config.json; missing: model.safetensors; ...` | Bootstrap interrupted before finish (removed `BOOTSTRAP_ONLY` at `100%`) | Re-add `BOOTSTRAP_ONLY=1`, redeploy, wait for **`Bootstrap complete.`** |
+| `railway run python ...` → `No such file or directory` | `railway run` executes on your Mac, not in the container | Use `BOOTSTRAP_ONLY=1` or `railway ssh` |
+| `railway ssh` → *container is not running* | API was crash-looping on empty volume (older builds) or bootstrap deploy exited | Use `BOOTSTRAP_ONLY=1`; after latest code, API stays up with `/readyz` 503 instead of exiting |
+| Deploy stuck at *Deploying* during bootstrap | Health check targets `/healthz` but API is not started in bootstrap mode | Normal — watch **Deploy logs** for `Bootstrap complete.`, not deployment badge |
+| `Couldn't find ffmpeg` | `pydub` optional dependency | Safe to ignore for `/v1/tts/auto` WAV output |
+
+**Do not remove `BOOTSTRAP_ONLY` until deploy logs show `Bootstrap complete.` with ~3 GB on disk.**
+
+```
+  Empty volume
+       │
+       ▼
+  API can't load model ──► /readyz 503 (load_error tells you to bootstrap)
+       │
+       ▼
+  BOOTSTRAP_ONLY=1 deploy ──► download + verify ──► Bootstrap complete. (~3 GB)
+       │
+       ▼
+  Remove BOOTSTRAP_ONLY ──► redeploy ──► model loads ──► /readyz 200
+```
 
 ### Cold start behavior
 

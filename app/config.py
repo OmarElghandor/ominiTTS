@@ -6,13 +6,13 @@ from pathlib import Path
 import torch
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.model_store import assert_model_store_verified
+from app.model_store import assert_model_store_verified, resolve_model_store_dir
 
 logger = logging.getLogger(__name__)
 
 MODEL_STORE_EMPTY_MSG = (
-    "MODEL_STORE_DIR is empty — run the bootstrap script against this volume "
-    "before starting the API service"
+    "MODEL_STORE_DIR is empty — set BOOTSTRAP_ONLY=1 in Railway, deploy, wait for "
+    "'Bootstrap complete' (~3 GB), remove the variable, then redeploy"
 )
 
 
@@ -82,22 +82,14 @@ class Settings(BaseSettings):
         return resolved_device, resolved_dtype
 
 
-def _resolve_model_store_dir(settings: Settings) -> str:
-    if "MODEL_STORE_DIR" in os.environ:
-        return settings.MODEL_STORE_DIR
-    if mount := os.environ.get("RAILWAY_VOLUME_MOUNT_PATH"):
-        return mount
-    return settings.MODEL_STORE_DIR
-
-
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    resolved = _resolve_model_store_dir(settings)
-    if resolved != settings.MODEL_STORE_DIR:
-        logger.info(
-            "MODEL_STORE_DIR not set — using RAILWAY_VOLUME_MOUNT_PATH=%s",
-            resolved,
-        )
-        settings.MODEL_STORE_DIR = resolved
+    resolved = str(resolve_model_store_dir())
+    settings.MODEL_STORE_DIR = resolved
+    logger.info(
+        "MODEL_STORE_DIR=%s RAILWAY_VOLUME_MOUNT_PATH=%s",
+        resolved,
+        os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "<unset>"),
+    )
     return settings

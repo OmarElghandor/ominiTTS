@@ -105,18 +105,13 @@ def _suffix_from_upload(filename: str | None) -> str:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.assert_offline_mode()
-    settings.assert_model_store_ready()
+    # Do not assert model store here — an empty volume must not kill the process or Railway
+    # enters a crash/restart loop and `railway ssh` becomes impossible. Verification runs
+    # in the background load task; /readyz surfaces load_error with bootstrap instructions.
     tts.initialize_device(settings)
 
     async def _load():
-        try:
-            await run_in_threadpool(tts.load_model, settings)
-        except Exception:
-            logger.error(
-                "Background model load failed — /readyz will report load_error. "
-                "MODEL_STORE_DIR=%s",
-                settings.MODEL_STORE_DIR,
-            )
+        await run_in_threadpool(tts.load_model, settings)
 
     load_task = asyncio.create_task(_load())
     app.state.model_load_task = load_task
