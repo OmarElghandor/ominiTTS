@@ -54,7 +54,7 @@ def _require_model_ready() -> None:
         raise HTTPException(
             status_code=503,
             detail={
-                "message": "Model failed to load. Check Railway logs and /readyz for details.",
+                "message": "Model failed to load. Check container logs and /readyz for details.",
                 "load_error": load_error,
             },
         )
@@ -105,9 +105,9 @@ def _suffix_from_upload(filename: str | None) -> str:
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.assert_offline_mode()
-    # Do not assert model store here — an empty volume must not kill the process or Railway
-    # enters a crash/restart loop and `railway ssh` becomes impossible. Verification runs
-    # in the background load task; /readyz surfaces load_error with bootstrap instructions.
+    # Do not assert model store here — an empty volume must not kill the process.
+    # Verification runs in the background load task; /readyz surfaces load_error
+    # with bootstrap instructions.
     tts.initialize_device(settings)
 
     async def _load():

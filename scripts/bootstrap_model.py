@@ -3,7 +3,8 @@
 
 Run manually against the persistent volume — never invoked by the API entrypoint.
 
-  railway ssh --service ominiTTS -- python /app/scripts/bootstrap_model.py
+  docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 \
+    omnivoice-api python scripts/bootstrap_model.py
   MODEL_STORE_DIR=./model-store python scripts/bootstrap_model.py
 """
 
@@ -39,7 +40,7 @@ AUDIO_TOKENIZER_REPO = "eustlb/higgs-audio-v2-tokenizer"
 
 
 def _download_kwargs() -> dict:
-    kwargs: dict = {}
+    kwargs: dict = {"local_dir_use_symlinks": False}
     token = os.environ.get("HF_TOKEN")
     if token:
         kwargs["token"] = token
@@ -52,7 +53,6 @@ def _log_store_context(store_dir: Path, label: str) -> None:
     print(
         f"{label}\n"
         f"  MODEL_STORE_DIR:              {store_dir}\n"
-        f"  RAILWAY_VOLUME_MOUNT_PATH:    {os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', '<unset>')}\n"
         f"  On-disk size:                 {format_size(total)}\n"
         f"  Top-level ({len(top_level)}):  {', '.join(top_level) if top_level else '<empty>'}"
     )

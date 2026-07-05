@@ -11,8 +11,10 @@ from app.model_store import assert_model_store_verified, resolve_model_store_dir
 logger = logging.getLogger(__name__)
 
 MODEL_STORE_EMPTY_MSG = (
-    "MODEL_STORE_DIR is empty — set BOOTSTRAP_ONLY=1 in Railway, deploy, wait for "
-    "'Bootstrap complete' (~3 GB), remove the variable, then redeploy"
+    "MODEL_STORE_DIR is empty — run scripts/bootstrap_model.py against the volume "
+    "(docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 "
+    "omnivoice-api python scripts/bootstrap_model.py) and wait for "
+    "'Bootstrap complete' (~3 GB)"
 )
 
 
@@ -87,9 +89,5 @@ def get_settings() -> Settings:
     settings = Settings()
     resolved = str(resolve_model_store_dir())
     settings.MODEL_STORE_DIR = resolved
-    logger.info(
-        "MODEL_STORE_DIR=%s RAILWAY_VOLUME_MOUNT_PATH=%s",
-        resolved,
-        os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "<unset>"),
-    )
+    logger.info("MODEL_STORE_DIR=%s", resolved)
     return settings

@@ -46,10 +46,22 @@ cp .env.example .env
 
 ### 1. Bootstrap model weights (one-time)
 
-Seed the Docker volume before starting the API:
+Create a host directory for weights (compose bind-mounts it into the container):
 
 ```bash
-# Option A — bootstrap into the compose volume via a one-off container
+mkdir -p ./model-store
+```
+
+Set in `.env` (or export for one-off commands):
+
+```
+OMNIVOICE_VOLUME_HOST_PATH=./model-store
+```
+
+Seed weights before starting the API:
+
+```bash
+# Bootstrap into the compose bind mount via a one-off container
 docker compose run --rm \
   -e HF_HUB_OFFLINE=0 \
   -e TRANSFORMERS_OFFLINE=0 \
@@ -57,7 +69,7 @@ docker compose run --rm \
   omnivoice-api \
   python scripts/bootstrap_model.py
 
-# Option B — bootstrap to a local directory, then bind-mount it in compose for dev
+# Or bootstrap directly to a local directory (no Docker)
 pip install -r requirements-bootstrap.txt
 MODEL_STORE_DIR=./model-store python scripts/bootstrap_model.py
 ```
@@ -78,15 +90,15 @@ With hot reload for app code changes:
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-### GPU (local only)
+### GPU
 
-Uncomment the `deploy.resources.reservations.devices` block in `docker-compose.yml`, then set in `.env`:
+`docker-compose.yml` enables GPU reservation by default (RunPod pods and local dev with [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)). Set in `.env`:
 
 ```
 DEVICE=cuda:0
 ```
 
-If no GPU is detected at startup, the service logs a warning and falls back to CPU automatically.
+For CPU-only testing, set `DEVICE=cpu`. If CUDA is requested but unavailable, the service logs a warning and falls back to CPU automatically.
 
 ### Health checks
 
@@ -109,7 +121,7 @@ Interactive API docs: `http://localhost:8080/docs`
 
 ## API contract
 
-All endpoints are unauthenticated — intended for internal service-to-service use on a trusted network (e.g. Railway private networking or your backend only).
+All endpoints are unauthenticated — intended for internal service-to-service use on a trusted network (e.g. Langify backend or RunPod proxy with access restricted upstream).
 
 Successful TTS responses return **24 kHz mono WAV** (`Content-Type: audio/wav`).
 
@@ -191,8 +203,9 @@ curl -X POST http://localhost:8080/v1/tts/auto \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MODEL_NAME` | `k2-fsa/OmniVoice` | HF repo id — **bootstrap script only**, not used at API runtime |
-| `MODEL_STORE_DIR` | `/data/omnivoice-model` | Local path to self-hosted weights (must match volume mount) |
-| `DEVICE` | `cuda:0` | Inference device (`cpu` on CPU-only hosts) |
+| `MODEL_STORE_DIR` | `/data/omnivoice-model` | Container path to self-hosted weights (must match compose volume mount target) |
+| `OMNIVOICE_VOLUME_HOST_PATH` | `/workspace/omnivoice-model` | Host path for compose bind mount (RunPod Network Volume; set `./model-store` locally) |
+| `DEVICE` | `cuda:0` | Inference device (`cpu` for CPU-only testing) |
 | `DTYPE` | auto | `float16` on GPU, `float32` on CPU (override optional) |
 | `HF_HUB_OFFLINE` | `1` | Must stay `1` in production — blocks HF network access |
 | `TRANSFORMERS_OFFLINE` | `1` | Must stay `1` in production — blocks transformers downloads |
@@ -203,9 +216,40 @@ See [`.env.example`](.env.example) for a template.
 
 ---
 
-## Railway deployment
+## RunPod deployment (production GPU)
 
-Railway builds from the [`Dockerfile`](Dockerfile) via [`railway.json`](railway.json) — not Nixpacks/Railpack auto-detection.
+**Active deployment target.** OmniVoice requires GPU for production latency; RunPod persistent GPU Pods with Network Volumes replace the archived Railway CPU attempt.
+
+Full step-by-step guide: [`deploy/runpod/README.md`](deploy/runpod/README.md)
+
+### Summary
+
+1. Create a **Network Volume** (≥ 20 GB) and a **GPU Pod** in the same datacenter; attach the volume (default host mount `/workspace`).
+2. Expose **HTTP port 8080** in Pod settings.
+3. SSH into the Pod, clone the repo, `cp .env.example .env`, set `OMNIVOICE_VOLUME_HOST_PATH=/workspace/omnivoice-model`.
+4. Verify CUDA: `nvidia-smi` on host; after `docker compose up`, `torch.cuda.is_available()` must be `True` inside the container.
+5. Bootstrap weights once via `docker compose run --rm ... python scripts/bootstrap_model.py`.
+6. Start the API: `docker compose up --build -d`.
+7. Access via RunPod proxy: `https://[POD_ID]-8080.proxy.runpod.net`
+
+### Verification checklist
+
+See [`deploy/runpod/README.md`](deploy/runpod/README.md) §7 for the full checklist:
+
+1. Host GPU visible via `nvidia-smi`; driver CUDA version compatible with Dockerfile (`nvidia/cuda:12.8.0`)
+2. `torch.cuda.is_available()` → `True` inside container
+3. Bootstrap complete (~3.27 GB, flat layout)
+4. `GET /readyz` → 200; logs show `device=cuda:0`
+5. `POST /v1/tts/auto` → playable WAV with GPU latency
+6. External reachability via RunPod proxy URL
+
+---
+
+## Railway deployment (archived — CPU-only reference)
+
+> **Not the active deployment target.** Preserved for troubleshooting history from the CPU integration attempt. Config archived at [`deploy/railway/`](deploy/railway/). Production GPU → RunPod (above).
+
+Railway built from the [`Dockerfile`](Dockerfile) via [`deploy/railway/railway.json`](deploy/railway/railway.json) — not Nixpacks/Railpack auto-detection.
 
 ### GPU requirement (critical)
 
@@ -262,7 +306,7 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
    | `RAILWAY_RUN_UID` | `0` (required — volumes mount as root; entrypoint chowns then drops to `appuser`) |
    | `BOOTSTRAP_ONLY` | *(one-time only)* `1` — run bootstrap on deploy instead of starting the API; remove after volume is seeded |
 
-6. **Deploy.** `healthcheckTimeout` is 600 s in `railway.json` for cold model load. Poll `/readyz` before routing traffic.
+6. **Deploy.** `healthcheckTimeout` is 600 s in [`deploy/railway/railway.json`](deploy/railway/railway.json) for cold model load. Poll `/readyz` before routing traffic.
 
 ### Post-deploy verification
 
@@ -292,7 +336,7 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 1. Service → **Settings** → **Volumes** → edit mount path (or `railway volume update --volume <name> --mount-path /data/omnivoice-model`)
 2. Re-run bootstrap (`BOOTSTRAP_ONLY=1` deploy, or `railway ssh` if the service is up) — data at the old path is not visible after remounting
 
-**Deploy error:** *"requires a volume to be mounted at /data/omnivoice-model"* — caused by a stale `requiredMountPath` in `railway.json`. Current config no longer enforces a fixed path; redeploy after pulling latest, or update your volume mount / `MODEL_STORE_DIR` to match.
+**Deploy error:** *"requires a volume to be mounted at /data/omnivoice-model"* — caused by a stale `requiredMountPath` in an older `railway.json`. Current archived config no longer enforces a fixed path; redeploy after pulling latest, or update your volume mount / `MODEL_STORE_DIR` to match.
 
 ### Troubleshooting: common error loop on Railway
 
@@ -303,7 +347,6 @@ OmniVoice is **not practically usable at production latency on CPU-only compute*
 | `railway run python ...` → `No such file or directory` | `railway run` executes on your Mac, not in the container | Use `BOOTSTRAP_ONLY=1` or `railway ssh` |
 | `railway ssh` → *container is not running* | API was crash-looping on empty volume (older builds) or bootstrap deploy exited | Use `BOOTSTRAP_ONLY=1`; after latest code, API stays up with `/readyz` 503 instead of exiting |
 | Deploy stuck at *Deploying* during bootstrap | Health check targets `/healthz` but API is not started in bootstrap mode | Normal — watch **Deploy logs** for `Bootstrap complete.`, not deployment badge |
-| `Couldn't find ffmpeg` | `pydub` optional dependency | Safe to ignore for `/v1/tts/auto` WAV output |
 
 **Do not remove `BOOTSTRAP_ONLY` until deploy logs show `Bootstrap complete.` with ~3 GB on disk.**
 
@@ -352,10 +395,15 @@ omnivoice-service/
 │   ├── config.py            # Environment-driven settings
 ├── scripts/
 │   └── bootstrap_model.py   # One-time HF weight download (not used at API runtime)
+├── deploy/
+│   ├── runpod/
+│   │   └── README.md        # RunPod GPU deployment guide (active)
+│   └── railway/
+│       ├── railway.json     # Archived Railway config
+│       └── README.md
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-compose.dev.yml
-├── railway.json
 ├── requirements.txt
 ├── requirements-bootstrap.txt
 ├── .dockerignore
@@ -368,4 +416,3 @@ omnivoice-service/
 ## License
 
 OmniVoice model and library: see [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice). This wrapper service is part of the Langify project infrastructure.
-# ominiTTS

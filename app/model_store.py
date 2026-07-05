@@ -22,20 +22,14 @@ MIN_FILE_BYTES: dict[str, int] = {
 }
 
 BOOTSTRAP_RERUN_MSG = (
-    "MODEL_STORE_DIR failed verification — set BOOTSTRAP_ONLY=1 in Railway, deploy, "
-    "wait for 'Bootstrap complete' (~3 GB), remove the variable, then redeploy"
+    "MODEL_STORE_DIR failed verification — re-run scripts/bootstrap_model.py against the "
+    "volume and wait for 'Bootstrap complete' (~3 GB)"
 )
 
 
 def resolve_model_store_dir() -> Path:
-    """Resolve the model store path (must match the Railway volume mount when attached)."""
-    # Railway injects RAILWAY_VOLUME_MOUNT_PATH only when a volume is attached — prefer it
-    # over the Dockerfile default so bootstrap and the API always target the live mount.
-    raw = (
-        os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
-        or os.environ.get("MODEL_STORE_DIR")
-        or "/data/omnivoice-model"
-    )
+    """Resolve the model store path (must match the container volume mount)."""
+    raw = os.environ.get("MODEL_STORE_DIR") or "/data/omnivoice-model"
     return Path(raw).resolve()
 
 

@@ -22,7 +22,7 @@ _load_error: str | None = None
 _resolved_device: str = "cpu"
 
 _HF_DOWNLOAD_GUARD_MSG = (
-    "HF download attempted in API process — set BOOTSTRAP_ONLY=1 in Railway to seed the volume"
+    "HF download attempted in API process — run scripts/bootstrap_model.py to seed the volume"
 )
 
 

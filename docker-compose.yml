@@ -10,17 +10,13 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     volumes:
-      - omnivoice-model-cache:/data/omnivoice-model
+      - ${OMNIVOICE_VOLUME_HOST_PATH:-/workspace/omnivoice-model}:/data/omnivoice-model
     restart: unless-stopped
-    # GPU reservation (local dev only — requires Docker Compose + nvidia-container-toolkit).
-    # Railway provisions GPUs via its own platform plans; this block is NOT used on Railway.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-
-volumes:
-  omnivoice-model-cache:
+    # GPU reservation — active on RunPod pods and local dev with nvidia-container-toolkit.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

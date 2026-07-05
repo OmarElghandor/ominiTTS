@@ -43,6 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     curl \
     gosu \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
