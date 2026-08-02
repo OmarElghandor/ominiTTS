@@ -53,7 +53,9 @@ RUN pip install -r /tmp/requirements-bootstrap.txt
 
 WORKDIR /app
 COPY app/ /app/app/
+COPY api/ /app/api/
 COPY scripts/ /app/scripts/
+COPY handler.py /app/handler.py
 COPY entrypoint.sh /entrypoint.sh
 
 RUN useradd -m -u 1000 appuser && \
@@ -68,3 +70,35 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1"]
+
+# ---------------------------------------------------------------------------
+# Serverless target — queue worker for RunPod on-demand endpoints.
+# Build: docker build --platform linux/amd64 --target serverless \
+#          -t <registry>/omnivoice-serverless:latest .
+# Runs as non-root (appuser via entrypoint). Model weights stay on Network Volume.
+# ---------------------------------------------------------------------------
+FROM runtime AS serverless
+
+ENV MODEL_STORE_DIR=/runpod-volume/omnivoice-model \
+    DEVICE=cuda:0 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    SKIP_RECURSIVE_CHOWN=1 \
+    MAX_CONCURRENT_REQUESTS=1 \
+    MAX_QUEUE_SIZE=8 \
+    REQUEST_TIMEOUT=120 \
+    LOG_LEVEL=INFO \
+    OUTPUT_FORMAT=wav \
+    SPEECH_PROVIDER=omnivoice \
+    WARMUP_TEXT=Hello \
+    READY_MARKER_PATH=/tmp/omnivoice-ready
+
+# Ready after SpeechEngine warmup writes READY_MARKER_PATH (no FastAPI port).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+    CMD test -f /tmp/omnivoice-ready || exit 1
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python", "-u", "/app/handler.py"]
+
+# Default target for `docker build` / compose — FastAPI Pod image (must stay last).
+FROM runtime

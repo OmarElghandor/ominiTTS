@@ -8,25 +8,47 @@ This service is the **self-hosted tier** in Langify's TTS architecture:
 |------|----------|----------|
 | Static / template audio | ElevenLabs | Pre-generated lesson content |
 | Dynamic / LLM content | Azure TTS | Real-time lesson narration |
-| Self-hosted (scale path) | **This service** | Cost control at scale (Groq API → RunPod → dedicated GPU) |
+| Self-hosted (scale path) | **This service** | Cost control at scale (Groq API → RunPod Serverless → dedicated GPU) |
 
 **This service is NOT wired into the Langify Node/Express backend yet.** A follow-up task will add it as a provider option in the backend TTS router.
 
 ---
 
-## Architecture: offline runtime, one-time bootstrap
+## Architecture: SpeechEngine + offline bootstrap
 
-Production containers **never contact huggingface.co**. Weights are downloaded once via `scripts/bootstrap_model.py` into a persistent volume (`MODEL_STORE_DIR`), then the API loads exclusively from that local path with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`.
+Inference is provider-agnostic. Entrypoints call **SpeechEngine** only — never OmniVoice directly — so backends can be swapped later (`SPEECH_PROVIDER`) without changing FastAPI routes or the RunPod handler.
 
-The bootstrap script uses `snapshot_download(local_dir=...)` so files land **flat** at the volume root (`config.json`, `model.safetensors`, `tokenizer.json`, `audio_tokenizer/`, etc.). Do **not** use `cache_dir` — that creates a nested `models--k2-fsa--OmniVoice/snapshots/...` layout that `OmniVoice.from_pretrained(local_path)` cannot read.
+```
+  FastAPI (app/main.py)  ─┐
+                          ├──►  SpeechEngine.generate(...)
+  RunPod (api/handler.py)─┘              │
+                                         ▼
+                                   ModelManager (singleton)
+                                         │
+                                   SpeechProvider
+                                         │
+                                   OmniVoice (today)
+```
+
+Production containers **never contact huggingface.co**. Weights are downloaded once via `scripts/bootstrap_model.py` into a persistent volume (`MODEL_STORE_DIR`), then loaded offline with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`.
+
+The bootstrap script uses `snapshot_download(local_dir=...)` so files land **flat** at the volume root. Do **not** use `cache_dir`.
 
 ```
   [One-time]  bootstrap_model.py  ──►  MODEL_STORE_DIR (volume)
                                               │
-  [Runtime]   FastAPI / OmniVoice   ◄─────────┘  (offline only)
+  [Runtime]   SpeechEngine / provider  ◄──────┘  (offline only)
 ```
 
-Re-run bootstrap only when intentionally upgrading to a newer OmniVoice checkpoint — not on every deploy.
+### Deployment modes
+
+| Mode | When | Docs |
+|------|------|------|
+| **Local** | Docker Compose + optional GPU | Quick start below |
+| **FastAPI / Pod** | Always-on GPU, raw WAV HTTP | [`deploy/runpod/README.md`](deploy/runpod/README.md) |
+| **RunPod Serverless** | On-demand scale-to-zero, base64 JSON | [`deploy/runpod/serverless.md`](deploy/runpod/serverless.md) |
+
+Re-run bootstrap only when upgrading checkpoints — not on every deploy.
 
 ---
 
@@ -202,15 +224,21 @@ curl -X POST http://localhost:8080/v1/tts/auto \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MODEL_NAME` | `k2-fsa/OmniVoice` | HF repo id — **bootstrap script only**, not used at API runtime |
-| `MODEL_STORE_DIR` | `/data/omnivoice-model` | Container path to self-hosted weights (must match compose volume mount target) |
-| `OMNIVOICE_VOLUME_HOST_PATH` | `/workspace/omnivoice-model` | Host path for compose bind mount (RunPod Network Volume; set `./model-store` locally) |
-| `DEVICE` | `cuda:0` | Inference device (`cpu` for CPU-only testing) |
-| `DTYPE` | auto | `float16` on GPU, `float32` on CPU (override optional) |
-| `HF_HUB_OFFLINE` | `1` | Must stay `1` in production — blocks HF network access |
-| `TRANSFORMERS_OFFLINE` | `1` | Must stay `1` in production — blocks transformers downloads |
+| `MODEL_NAME` | `k2-fsa/OmniVoice` | HF repo id — **bootstrap only** |
+| `MODEL_STORE_DIR` | `/data/omnivoice-model` | Local weights path (serverless: `/runpod-volume/omnivoice-model`) |
+| `OMNIVOICE_VOLUME_HOST_PATH` | `/workspace/omnivoice-model` | Compose bind mount host path |
+| `DEVICE` | `cuda:0` | Inference device |
+| `DTYPE` | auto | `float16` on GPU, `float32` on CPU |
+| `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | `1` | Must stay `1` in production |
 | `MAX_TEXT_LENGTH` | `500` | Max input text length |
-| `PORT` | `8080` | HTTP port |
+| `MAX_CONCURRENT_REQUESTS` | `1` | GPU semaphore size |
+| `MAX_QUEUE_SIZE` | `8` | Reject when waiters exceed this |
+| `REQUEST_TIMEOUT` | `120` | Per-request timeout (seconds) |
+| `LOG_LEVEL` | `INFO` | Log level |
+| `OUTPUT_FORMAT` | `wav` | Engine output container |
+| `SPEECH_PROVIDER` | `omnivoice` | Provider registry key |
+| `WARMUP_TEXT` | `Hello` | Startup warmup utterance |
+| `PORT` | `8080` | FastAPI HTTP port |
 
 See [`.env.example`](.env.example) for a template.
 
@@ -218,11 +246,24 @@ See [`.env.example`](.env.example) for a template.
 
 ## RunPod deployment (production GPU)
 
-**Active deployment target.** OmniVoice requires GPU for production latency; RunPod persistent GPU Pods with Network Volumes replace the archived Railway CPU attempt.
+**Active deployment target.** OmniVoice requires GPU for production latency. Two RunPod paths:
 
-Full step-by-step guide: [`deploy/runpod/README.md`](deploy/runpod/README.md)
+| Path | When to use | Docs |
+|------|-------------|------|
+| **Serverless (on-demand)** | Scale to zero; pay per job; Langify via `/run` + `/runsync` | [`deploy/runpod/serverless.md`](deploy/runpod/serverless.md) |
+| **Persistent GPU Pod** | Always-on FastAPI `/v1/tts/*` with raw WAV | [`deploy/runpod/README.md`](deploy/runpod/README.md) |
 
-### Summary
+### Serverless (recommended for on-demand)
+
+1. Create a **Network Volume** (≥ 20 GB); bootstrap weights into `omnivoice-model` on that volume.
+2. Build: `docker build --platform linux/amd64 --target serverless -t <registry>/omnivoice-serverless:latest .`
+3. Create a Serverless endpoint: **active workers = 0**, idle timeout 60–300 s, FlashBoot on, attach the volume, GPU ≥ 16 GB VRAM.
+4. Set `MODEL_STORE_DIR=/runpod-volume/omnivoice-model`, `DEVICE=cuda:0`, offline flags `1`.
+5. Call `POST https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync` with `{"input":{"mode":"auto","text":"..."}}`; decode `output.audio_base64` to WAV.
+
+Full guide: [`deploy/runpod/serverless.md`](deploy/runpod/serverless.md).
+
+### Persistent Pod (FastAPI)
 
 1. Create a **Network Volume** (≥ 20 GB) and a **GPU Pod** in the same datacenter; attach the volume (default host mount `/workspace`).
 2. Expose **HTTP port 8080** in Pod settings.
@@ -232,17 +273,7 @@ Full step-by-step guide: [`deploy/runpod/README.md`](deploy/runpod/README.md)
 6. Start the API: `docker compose up --build -d`.
 7. Access via RunPod proxy: `https://[POD_ID]-8080.proxy.runpod.net`
 
-### Verification checklist
-
-See [`deploy/runpod/README.md`](deploy/runpod/README.md) §7 for the full checklist:
-
-1. Host GPU visible via `nvidia-smi`; driver CUDA version compatible with Dockerfile (`nvidia/cuda:12.8.0`)
-2. `torch.cuda.is_available()` → `True` inside container
-3. Bootstrap complete (~3.27 GB, flat layout)
-4. `GET /readyz` → 200; logs show `device=cuda:0`
-5. `POST /v1/tts/auto` → playable WAV with GPU latency
-6. External reachability via RunPod proxy URL
-
+Verification checklist: [`deploy/runpod/README.md`](deploy/runpod/README.md) §7.
 ---
 
 ## Railway deployment (archived — CPU-only reference)
@@ -388,27 +419,29 @@ Restarting/redeploying the API container makes **zero network calls to huggingfa
 ```
 omnivoice-service/
 ├── app/
-│   ├── main.py              # FastAPI routes, lifespan, exception handlers
-│   ├── tts.py               # OmniVoice wrapper (singleton model)
-│   ├── model_store.py       # Shared MODEL_STORE_DIR layout verification
-│   ├── schemas.py           # Pydantic request/response models
-│   ├── config.py            # Environment-driven settings
-├── scripts/
-│   └── bootstrap_model.py   # One-time HF weight download (not used at API runtime)
-├── deploy/
-│   ├── runpod/
-│   │   └── README.md        # RunPod GPU deployment guide (active)
-│   └── railway/
-│       ├── railway.json     # Archived Railway config
-│       └── README.md
-├── Dockerfile
-├── docker-compose.yml
-├── docker-compose.dev.yml
-├── requirements.txt
-├── requirements-bootstrap.txt
-├── .dockerignore
-├── .env.example
-└── README.md
+│   ├── main.py                 # FastAPI routes (calls SpeechEngine)
+│   ├── speech/
+│   │   ├── engine.py           # SpeechEngine facade (concurrency + metrics)
+│   │   ├── model_manager.py    # Singleton load / warmup / status
+│   │   ├── provider.py         # SpeechProvider protocol
+│   │   ├── types.py
+│   │   └── providers/
+│   │       └── omnivoice.py    # OmniVoice backend
+│   ├── metrics/                # Structured JSON request metrics
+│   ├── utils/audio.py
+│   ├── model_store.py
+│   ├── schemas.py
+│   ├── config.py
+│   └── tts.py                  # Thin compatibility shim
+├── api/
+│   └── handler.py              # RunPod adapter (OpenAI-compatible I/O)
+├── handler.py                  # Docker entry shim → api.handler
+├── scripts/bootstrap_model.py
+├── deploy/runpod/
+│   ├── README.md               # Persistent Pod
+│   └── serverless.md           # Serverless on-demand
+├── Dockerfile                  # runtime + --target serverless
+└── ...
 ```
 
 ---

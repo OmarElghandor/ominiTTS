@@ -13,7 +13,12 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.schemas import AutoRequest, CloneRequest, DesignRequest, HealthResponse
-from app import tts
+from app.speech import (
+    QueueFullError,
+    RequestTimeoutError,
+    SpeechRequest,
+    get_speech_engine,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,13 +28,14 @@ logger = logging.getLogger(__name__)
 
 
 def _health_payload() -> HealthResponse:
-    load_error = tts.get_load_error()
+    engine = get_speech_engine()
+    load_error = engine.get_load_error()
     status = "ok" if not load_error else "degraded"
     return HealthResponse(
         status=status,
-        device=tts.get_resolved_device(),
-        model_loaded=tts.is_model_ready(),
-        model_loading=tts.is_model_loading(),
+        device=engine.get_device(),
+        model_loaded=engine.is_ready(),
+        model_loading=engine.is_loading(),
         load_error=load_error,
     )
 
@@ -46,10 +52,11 @@ def _validate_text_length(text: str) -> None:
 
 
 def _require_model_ready() -> None:
-    if tts.is_model_ready():
+    engine = get_speech_engine()
+    if engine.is_ready():
         return
 
-    load_error = tts.get_load_error()
+    load_error = engine.get_load_error()
     if load_error:
         raise HTTPException(
             status_code=503,
@@ -59,7 +66,7 @@ def _require_model_ready() -> None:
             },
         )
 
-    if tts.is_model_loading():
+    if engine.is_loading():
         raise HTTPException(
             status_code=503,
             detail={
@@ -101,17 +108,35 @@ def _suffix_from_upload(filename: str | None) -> str:
     return suffix if suffix in {".wav", ".mp3", ".flac", ".ogg", ".m4a"} else ".wav"
 
 
+async def _synthesize(request: SpeechRequest) -> bytes:
+    engine = get_speech_engine()
+    try:
+        result = await engine.generate(request)
+    except QueueFullError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"message": str(exc)},
+        ) from exc
+    except RequestTimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={"message": str(exc)},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
+    return result.audio
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    settings.assert_offline_mode()
-    # Do not assert model store here — an empty volume must not kill the process.
-    # Verification runs in the background load task; /readyz surfaces load_error
-    # with bootstrap instructions.
-    tts.initialize_device(settings)
+    engine = get_speech_engine()
 
+    # Soft-fail for Pod/local: empty volume surfaces via /readyz instead of crashing.
     async def _load():
-        await run_in_threadpool(tts.load_model, settings)
+        await run_in_threadpool(
+            lambda: engine.startup(settings, fail_fast=False)
+        )
 
     load_task = asyncio.create_task(_load())
     app.state.model_load_task = load_task
@@ -155,7 +180,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(torch.cuda.OutOfMemoryError)
 async def cuda_oom_handler(request: Request, exc: torch.cuda.OutOfMemoryError):
     logger.error("CUDA out of memory during request: %s", exc)
-    tts.clear_cuda_cache()
+    get_speech_engine().clear_cuda_cache()
     return JSONResponse(
         status_code=503,
         content={"message": "Service temporarily overloaded. Try again shortly."},
@@ -229,16 +254,18 @@ async def tts_clone(request: Request):
         duration = parsed.duration
         suffix = ".wav"
 
-    wav_bytes = await run_in_threadpool(
-        tts.synthesize_clone,
-        text=text,
-        ref_audio_bytes=ref_audio_bytes,
-        ref_text=ref_text,
-        language=language,
-        num_step=num_step,
-        speed=speed,
-        duration=duration,
-        ref_audio_suffix=suffix,
+    wav_bytes = await _synthesize(
+        SpeechRequest(
+            text=text,
+            mode="clone",
+            language=language,
+            num_step=num_step,
+            speed=speed,
+            duration=duration,
+            ref_audio=ref_audio_bytes,
+            ref_text=ref_text,
+            ref_audio_suffix=suffix,
+        )
     )
     return _audio_response(wav_bytes)
 
@@ -248,14 +275,16 @@ async def tts_design(body: DesignRequest):
     _require_model_ready()
     _validate_text_length(body.text)
 
-    wav_bytes = await run_in_threadpool(
-        tts.synthesize_design,
-        text=body.text,
-        instruct=body.instruct,
-        language=body.language,
-        num_step=body.num_step,
-        speed=body.speed,
-        duration=body.duration,
+    wav_bytes = await _synthesize(
+        SpeechRequest(
+            text=body.text,
+            mode="design",
+            instruct=body.instruct,
+            language=body.language,
+            num_step=body.num_step,
+            speed=body.speed,
+            duration=body.duration,
+        )
     )
     return _audio_response(wav_bytes)
 
@@ -265,12 +294,14 @@ async def tts_auto(body: AutoRequest):
     _require_model_ready()
     _validate_text_length(body.text)
 
-    wav_bytes = await run_in_threadpool(
-        tts.synthesize_auto,
-        text=body.text,
-        language=body.language,
-        num_step=body.num_step,
-        speed=body.speed,
-        duration=body.duration,
+    wav_bytes = await _synthesize(
+        SpeechRequest(
+            text=body.text,
+            mode="auto",
+            language=body.language,
+            num_step=body.num_step,
+            speed=body.speed,
+            duration=body.duration,
+        )
     )
     return _audio_response(wav_bytes)

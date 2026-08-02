@@ -1,6 +1,8 @@
-# RunPod deployment (production GPU)
+# RunPod deployment (production GPU Pod)
 
-Deploy the OmniVoice TTS API on a **RunPod persistent GPU Pod** with a **Network Volume** for model weights. This replaces the archived Railway CPU-only setup.
+Deploy the OmniVoice **FastAPI** API on a **RunPod persistent GPU Pod** with a **Network Volume** for model weights.
+
+For **on-demand Serverless** (SpeechEngine worker, scale to zero, OpenAI-compatible `/run` + `/runsync`), see **[serverless.md](serverless.md)**.
 
 **Prerequisites:** RunPod account, SSH key added in RunPod settings, basic familiarity with Docker Compose.
 

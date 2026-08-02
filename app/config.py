@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     MAX_TEXT_LENGTH: int = 500
     PORT: int = 8080
 
+    MAX_CONCURRENT_REQUESTS: int = 1
+    MAX_QUEUE_SIZE: int = 8
+    REQUEST_TIMEOUT: float = 120.0
+    LOG_LEVEL: str = "INFO"
+    OUTPUT_FORMAT: str = "wav"
+    SPEECH_PROVIDER: str = "omnivoice"
+    WARMUP_TEXT: str = "Hello"
+    READY_MARKER_PATH: str = "/tmp/omnivoice-ready"
+
     def resolve_model_path(self) -> Path:
         return Path(self.MODEL_STORE_DIR).resolve()
 
