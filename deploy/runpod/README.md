@@ -4,6 +4,8 @@ Deploy the OmniVoice **FastAPI** API on a **RunPod persistent GPU Pod** with a *
 
 For **on-demand Serverless** (SpeechEngine worker, scale to zero, OpenAI-compatible `/run` + `/runsync`), see **[serverless.md](serverless.md)**.
 
+If logs say **`MODEL_STORE_DIR is empty`**, seed the volume once: **[BOOTSTRAP.md](BOOTSTRAP.md)** (`bash scripts/bootstrap_runpod.sh`).
+
 **Prerequisites:** RunPod account, SSH key added in RunPod settings, basic familiarity with Docker Compose.
 
 ---

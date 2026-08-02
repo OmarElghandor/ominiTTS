@@ -104,6 +104,13 @@ class ModelManager:
                 settings.assert_offline_mode()
                 self.initialize_cuda(settings)
 
+                store = settings.resolve_model_path()
+                logger.info(
+                    "Loading speech provider from MODEL_STORE_DIR=%s (exists=%s)",
+                    store,
+                    store.is_dir() and any(store.iterdir()) if store.is_dir() else False,
+                )
+
                 provider = create_provider(settings.SPEECH_PROVIDER)
                 provider.load(settings)
                 self._provider = provider

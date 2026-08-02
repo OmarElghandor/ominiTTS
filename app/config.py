@@ -11,10 +11,13 @@ from app.model_store import assert_model_store_verified, resolve_model_store_dir
 logger = logging.getLogger(__name__)
 
 MODEL_STORE_EMPTY_MSG = (
-    "MODEL_STORE_DIR is empty — run scripts/bootstrap_model.py against the volume "
-    "(docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 "
-    "omnivoice-api python scripts/bootstrap_model.py) and wait for "
-    "'Bootstrap complete' (~3 GB)"
+    "MODEL_STORE_DIR is empty — seed OmniVoice weights once onto the Network Volume, "
+    "then restart. On a RunPod Pod with the volume attached: "
+    "bash scripts/bootstrap_runpod.sh "
+    "(or: BOOTSTRAP_ONLY=1 with HF_HUB_OFFLINE=0 / TRANSFORMERS_OFFLINE=0). "
+    "Wait for 'Bootstrap complete' (~3 GB). "
+    "Serverless expects MODEL_STORE_DIR=/runpod-volume/omnivoice-model; "
+    "Pod/compose uses /data/omnivoice-model → host /workspace/omnivoice-model."
 )
 
 
@@ -49,7 +52,7 @@ class Settings(BaseSettings):
     def assert_model_store_ready(self) -> None:
         store = self.resolve_model_path()
         if not store.is_dir() or not self.model_store_has_content():
-            raise RuntimeError(MODEL_STORE_EMPTY_MSG)
+            raise RuntimeError(f"{MODEL_STORE_EMPTY_MSG} (MODEL_STORE_DIR={store})")
         assert_model_store_verified(store)
 
     def assert_offline_mode(self) -> None:

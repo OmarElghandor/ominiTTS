@@ -35,10 +35,21 @@ Swap providers later via `SPEECH_PROVIDER` without changing the handler or FastA
 
 1. RunPod → **Storage** → Network Volume ≥ **20 GB** in a datacenter with your target GPUs.
 2. Attach the volume to the Serverless endpoint (mounts at **`/runpod-volume`**).
-3. Seed once into `omnivoice-model` on that volume (never at runtime):
+3. Seed once into `omnivoice-model` on that volume (never at runtime).
+
+**One-shot (recommended)** — on a temporary Pod in the **same datacenter** with the volume attached:
 
 ```bash
-# On a temporary Pod in the SAME datacenter with the volume attached:
+cd /path/to/ominiTTS
+bash scripts/bootstrap_runpod.sh
+# or: IMAGE=<registry>/omnivoice-serverless:latest bash scripts/bootstrap_runpod.sh
+```
+
+Full checklist: [`BOOTSTRAP.md`](BOOTSTRAP.md).
+
+Manual Docker equivalent:
+
+```bash
 mkdir -p /workspace/omnivoice-model
 docker run --rm --gpus all \
   -e MODEL_STORE_DIR=/data/omnivoice-model \
