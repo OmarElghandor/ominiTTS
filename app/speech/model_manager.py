@@ -131,21 +131,27 @@ class ModelManager:
             "downloading ~3 GB (this cold start will be slow)",
             store,
         )
-        import importlib.util
+        import os
+        import subprocess
+        import sys
 
         bootstrap_path = Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_model.py"
-        spec = importlib.util.spec_from_file_location("omnivoice_bootstrap_model", bootstrap_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"Cannot load bootstrap script at {bootstrap_path}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
         lock_file = _acquire_bootstrap_lock(store)
         try:
             if not self._store_needs_bootstrap(settings):
                 logger.info("Store already seeded by another worker — skipping download")
                 return
-            module.run_bootstrap(store)
+            # Fresh process so huggingface_hub does not keep a cached HF_HUB_OFFLINE=1.
+            env = os.environ.copy()
+            env["HF_HUB_OFFLINE"] = "0"
+            env["TRANSFORMERS_OFFLINE"] = "0"
+            env["MODEL_STORE_DIR"] = str(store)
+            logger.info("Running bootstrap subprocess: %s", bootstrap_path)
+            subprocess.run(
+                [sys.executable, str(bootstrap_path)],
+                env=env,
+                check=True,
+            )
         finally:
             _release_bootstrap_lock(lock_file)
 

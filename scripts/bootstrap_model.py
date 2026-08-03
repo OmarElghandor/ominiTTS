@@ -88,13 +88,44 @@ def _fail_verification(store_dir: Path, context: str) -> int:
     return 1
 
 
-def run_bootstrap(store_dir: Path | None = None) -> None:
-    """Download weights into store_dir. Raises on failure. Safe to call if already valid."""
-    # Bootstrap needs HF network even when production env is offline.
-    prev_hf = os.environ.get("HF_HUB_OFFLINE")
-    prev_tf = os.environ.get("TRANSFORMERS_OFFLINE")
+def _enable_hf_online() -> dict[str, str | None]:
+    """Allow Hugging Face downloads for this bootstrap call.
+
+    huggingface_hub caches HF_HUB_OFFLINE at import time, so flipping the env
+    alone is not enough if the library was already imported while offline=1.
+    """
+    prev = {
+        "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
+        "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
+    }
     os.environ["HF_HUB_OFFLINE"] = "0"
     os.environ["TRANSFORMERS_OFFLINE"] = "0"
+    try:
+        import huggingface_hub.constants as hf_constants
+
+        hf_constants.HF_HUB_OFFLINE = False
+    except Exception:
+        pass
+    return prev
+
+
+def _restore_hf_env(prev: dict[str, str | None]) -> None:
+    for key, value in prev.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    try:
+        import huggingface_hub.constants as hf_constants
+
+        hf_constants.HF_HUB_OFFLINE = os.environ.get("HF_HUB_OFFLINE", "") == "1"
+    except Exception:
+        pass
+
+
+def run_bootstrap(store_dir: Path | None = None) -> None:
+    """Download weights into store_dir. Raises on failure. Safe to call if already valid."""
+    prev = _enable_hf_online()
 
     try:
         from huggingface_hub import snapshot_download
@@ -120,13 +151,15 @@ def run_bootstrap(store_dir: Path | None = None) -> None:
             return
 
         print(f"Downloading {MODEL_NAME} into {target} ...")
+        print(f"HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE')!r} (online bootstrap)")
         if endpoint := os.environ.get("HF_ENDPOINT"):
             print(f"Using HF_ENDPOINT mirror: {endpoint}")
 
+        dl_kwargs = {**_download_kwargs(), "local_files_only": False}
         snapshot_download(
             repo_id=MODEL_NAME,
             local_dir=str(target),
-            **_download_kwargs(),
+            **dl_kwargs,
         )
 
         audio_tokenizer_dir = target / "audio_tokenizer"
@@ -137,7 +170,7 @@ def run_bootstrap(store_dir: Path | None = None) -> None:
             snapshot_download(
                 repo_id=AUDIO_TOKENIZER_REPO,
                 local_dir=str(audio_tokenizer_dir),
-                **_download_kwargs(),
+                **dl_kwargs,
             )
 
         _log_store_context(target, "Post-download store state:")
@@ -148,14 +181,7 @@ def run_bootstrap(store_dir: Path | None = None) -> None:
 
         _print_success_summary(target)
     finally:
-        if prev_hf is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = prev_hf
-        if prev_tf is None:
-            os.environ.pop("TRANSFORMERS_OFFLINE", None)
-        else:
-            os.environ["TRANSFORMERS_OFFLINE"] = prev_tf
+        _restore_hf_env(prev)
 
 
 def main() -> int:
