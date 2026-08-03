@@ -91,7 +91,8 @@ ENV MODEL_STORE_DIR=/runpod-volume/omnivoice-model \
     OUTPUT_FORMAT=wav \
     SPEECH_PROVIDER=omnivoice \
     WARMUP_TEXT=Hello \
-    READY_MARKER_PATH=/tmp/omnivoice-ready
+    READY_MARKER_PATH=/tmp/omnivoice-ready \
+    BOOTSTRAP_IF_EMPTY=1
 
 # Ready after SpeechEngine warmup writes READY_MARKER_PATH (no FastAPI port).
 HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \

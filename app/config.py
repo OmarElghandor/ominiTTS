@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     SPEECH_PROVIDER: str = "omnivoice"
     WARMUP_TEXT: str = "Hello"
     READY_MARKER_PATH: str = "/tmp/omnivoice-ready"
+    # If 1, first worker downloads weights into MODEL_STORE_DIR when empty (~3 GB, slow).
+    BOOTSTRAP_IF_EMPTY: bool = False
 
     def resolve_model_path(self) -> Path:
         return Path(self.MODEL_STORE_DIR).resolve()

@@ -4,16 +4,45 @@ from __future__ import annotations
 
 import logging
 import threading
+from pathlib import Path
 from typing import Any
 
 import torch
 
 from app.config import Settings
 from app.metrics.collect import status_gpu_fields
+from app.model_store import verify_model_store
 from app.speech.provider import SpeechProvider
 from app.speech.providers.omnivoice import create_provider
 
 logger = logging.getLogger(__name__)
+
+
+def _acquire_bootstrap_lock(store: Path):
+    """Exclusive lock so only one worker seeds the shared Network Volume."""
+    store.mkdir(parents=True, exist_ok=True)
+    lock_path = store / ".bootstrap.lock"
+    lock_file = open(lock_path, "a+", encoding="utf-8")
+    try:
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        pass
+    return lock_file
+
+
+def _release_bootstrap_lock(lock_file) -> None:
+    try:
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+    try:
+        lock_file.close()
+    except Exception:
+        pass
 
 
 class ModelManager:
@@ -75,7 +104,6 @@ class ModelManager:
                 raise RuntimeError(
                     "DEVICE requests CUDA but torch.cuda.is_available() is False"
                 )
-            # Force context init on the requested device index when present.
             idx = 0
             if ":" in resolved_device:
                 try:
@@ -90,8 +118,39 @@ class ModelManager:
             self._cuda_initialized = False
             logger.info("Running on CPU (DEVICE=%s)", resolved_device)
 
+    def _store_needs_bootstrap(self, settings: Settings) -> bool:
+        store = settings.resolve_model_path()
+        if not store.is_dir() or not any(store.iterdir()):
+            return True
+        return bool(verify_model_store(store))
+
+    def _bootstrap_if_empty(self, settings: Settings) -> None:
+        store = settings.resolve_model_path()
+        logger.warning(
+            "BOOTSTRAP_IF_EMPTY=1 and store is empty/invalid at %s — "
+            "downloading ~3 GB (this cold start will be slow)",
+            store,
+        )
+        import importlib.util
+
+        bootstrap_path = Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_model.py"
+        spec = importlib.util.spec_from_file_location("omnivoice_bootstrap_model", bootstrap_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Cannot load bootstrap script at {bootstrap_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        lock_file = _acquire_bootstrap_lock(store)
+        try:
+            if not self._store_needs_bootstrap(settings):
+                logger.info("Store already seeded by another worker — skipping download")
+                return
+            module.run_bootstrap(store)
+        finally:
+            _release_bootstrap_lock(lock_file)
+
     def load(self, settings: Settings) -> None:
-        """Load provider once. Raises on failure (fail-fast). Never downloads."""
+        """Load provider once. Raises on failure. Downloads only if BOOTSTRAP_IF_EMPTY=1."""
         with self._lock:
             if self.is_ready():
                 return
@@ -101,6 +160,9 @@ class ModelManager:
             self._loading = True
             self._load_error = None
             try:
+                if self._store_needs_bootstrap(settings) and settings.BOOTSTRAP_IF_EMPTY:
+                    self._bootstrap_if_empty(settings)
+
                 settings.assert_offline_mode()
                 self.initialize_cuda(settings)
 
