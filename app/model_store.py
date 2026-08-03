@@ -28,9 +28,27 @@ BOOTSTRAP_RERUN_MSG = (
 
 
 def resolve_model_store_dir() -> Path:
-    """Resolve the model store path (must match the container volume mount)."""
-    raw = os.environ.get("MODEL_STORE_DIR") or "/data/omnivoice-model"
-    return Path(raw).resolve()
+    """Resolve the model store path (must match the container volume mount).
+
+    On RunPod Serverless the Network Volume is at /runpod-volume. Prefer that
+    whenever the mount exists, even if MODEL_STORE_DIR was left at the Pod
+    default (/data/omnivoice-model).
+    """
+    raw = os.environ.get("MODEL_STORE_DIR")
+    runpod_store = Path("/runpod-volume/omnivoice-model")
+    pod_default = Path("/data/omnivoice-model")
+
+    if Path("/runpod-volume").is_dir():
+        # Volume attached (Serverless). Ignore mistaken Pod-default env.
+        if raw:
+            configured = Path(raw)
+            if configured.resolve() != pod_default.resolve():
+                return configured.resolve()
+        return runpod_store.resolve()
+
+    if raw:
+        return Path(raw).resolve()
+    return pod_default.resolve()
 
 
 def format_size(num_bytes: int) -> str:
