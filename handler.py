@@ -3,6 +3,8 @@
 Docker CMD: python -u /app/handler.py
 """
 
+print("omnivoice: handler.py starting (serverless entry)", flush=True)
+
 from api.handler import main
 
 if __name__ == "__main__":

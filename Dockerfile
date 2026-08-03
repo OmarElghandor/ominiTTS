@@ -100,5 +100,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-u", "/app/handler.py"]
 
-# Default target for `docker build` / compose — FastAPI Pod image (must stay last).
-FROM runtime
+# Default image for `docker build` / RunPod GitHub integration (no --target).
+# MUST be serverless — otherwise the image runs uvicorn and queue jobs never start.
+FROM serverless
