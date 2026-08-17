@@ -60,7 +60,10 @@ def _parse_generation_params(job_input: dict[str, Any]) -> dict[str, Any]:
     duration = job_input.get("duration")
     language = _optional_str(job_input.get("language"), "language")
 
-    if not isinstance(num_step, int) or isinstance(num_step, bool) or not (1 <= num_step <= 128):
+    if isinstance(num_step, bool) or not isinstance(num_step, (int, float)):
+        raise ValueError("num_step must be an integer between 1 and 128")
+    num_step = int(num_step)
+    if not (1 <= num_step <= 128):
         raise ValueError("num_step must be an integer between 1 and 128")
     if not isinstance(speed, (int, float)) or isinstance(speed, bool) or not (0 < float(speed) <= 5.0):
         raise ValueError("speed must be a number in (0, 5]")
@@ -77,14 +80,55 @@ def _parse_generation_params(job_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_job_input(raw: Any) -> dict[str, Any]:
+    """Accept RunPod / console payload variants and return a flat params dict.
+
+    Supported shapes (after RunPod unwraps the outer job envelope):
+      {"input": "hello"}                          # text only
+      {"input": "hello", "speaker": "Mohamed"}    # OpenAI-style
+      {"text": "hello", "speaker": "Mohamed"}     # legacy
+      {"input": {"input": "hello", ...}}          # double-wrapped curl body in console
+    """
+    if raw is None:
+        raise ValueError(
+            "input is required. Send {\"input\": {\"input\": \"your text\", \"speaker\": \"Mohamed\"}}"
+        )
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            raise ValueError("input text is empty")
+        return {"input": text}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"input must be a JSON object or string, got {type(raw).__name__}"
+        )
+
+    payload = dict(raw)
+    nested = payload.get("input")
+    if isinstance(nested, dict):
+        # Console pasted the full curl body → job.input.input is another object.
+        payload = {**payload, **nested}
+    return payload
+
+
+def _extract_text(job_input: dict[str, Any]) -> str:
+    text = job_input.get("input")
+    if isinstance(text, dict):
+        text = text.get("input") or text.get("text")
+    if text is None:
+        text = job_input.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(
+            "input is required (string). Example: "
+            '{"input": {"input": "ازيك عامل ايه؟", "speaker": "Mohamed", "language": "arz"}}'
+        )
+    return text.strip()
+
+
 def job_input_to_speech_request(job_input: dict[str, Any]) -> SpeechRequest:
     """Map OpenAI-compatible (+ extensions / legacy) job input to SpeechRequest."""
     settings = get_settings()
-    text = job_input.get("input")
-    if text is None:
-        text = job_input.get("text")  # legacy alias
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("input is required (OpenAI-compatible text field)")
+    text = _extract_text(job_input)
 
     params = _parse_generation_params(job_input)
     model = _optional_str(job_input.get("model"), "model")
@@ -153,28 +197,51 @@ def job_input_to_speech_request(job_input: dict[str, Any]) -> SpeechRequest:
     )
 
 
+def _summarize_input(raw: Any) -> str:
+    if isinstance(raw, str):
+        preview = raw[:80] + ("…" if len(raw) > 80 else "")
+        return f"str len={len(raw)} preview={preview!r}"
+    if isinstance(raw, dict):
+        return f"dict keys={sorted(raw.keys())}"
+    return type(raw).__name__
+
+
 async def handler(job: dict[str, Any]) -> dict[str, Any]:
     engine = get_speech_engine()
     if not engine.is_ready():
         return {"error": engine.get_load_error() or "Model is not ready"}
 
-    job_input = job.get("input")
-    if not isinstance(job_input, dict):
-        return {"error": "input must be a JSON object"}
+    raw_input = job.get("input")
+    logger.info("Job %s received payload: %s", job.get("id"), _summarize_input(raw_input))
 
     try:
+        job_input = normalize_job_input(raw_input)
         request = job_input_to_speech_request(job_input)
+        logger.info(
+            "Synthesizing mode=%s speaker=%s chars=%s",
+            request.mode,
+            request.speaker,
+            len(request.text),
+        )
         result = await engine.generate(request)
+        logger.info(
+            "Synthesis complete: %.2fs audio, %s bytes",
+            result.duration_seconds,
+            len(result.audio),
+        )
         return {
             "audio_base64": base64.b64encode(result.audio).decode("ascii"),
             "sample_rate": result.sample_rate,
             "content_type": result.content_type,
         }
     except QueueFullError as exc:
+        logger.warning("Job rejected: %s", exc)
         return {"error": str(exc)}
     except RequestTimeoutError as exc:
+        logger.warning("Job timed out: %s", exc)
         return {"error": str(exc)}
     except ValueError as exc:
+        logger.warning("Job validation failed: %s", exc)
         return {"error": str(exc)}
     except torch.cuda.OutOfMemoryError as exc:
         logger.error("CUDA OOM: %s", exc)
