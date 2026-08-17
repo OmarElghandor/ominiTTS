@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -55,7 +56,8 @@ def _decode_ref_audio(ref_audio: Any) -> bytes:
 
 
 def _parse_generation_params(job_input: dict[str, Any]) -> dict[str, Any]:
-    num_step = job_input.get("num_step", 32)
+    settings = get_settings()
+    num_step = job_input.get("num_step", settings.DEFAULT_NUM_STEP)
     speed = job_input.get("speed", 1.0)
     duration = job_input.get("duration")
     language = _optional_str(job_input.get("language"), "language")
@@ -252,6 +254,39 @@ async def handler(job: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"Internal error: {type(exc).__name__}: {exc}"}
 
 
+def _patch_runpod_empty_job_poll() -> None:
+    """Treat FlashBoot / empty job-take payloads as 'no job' instead of ERROR spam.
+
+    runpod-python 1.7.x raises Exception("Job has missing field(s): id or input.")
+    when /job-take returns a JSON object that is not a real job (common with
+    FlashBoot idle polls). The scaler then logs Failed to get job with
+    requestId=null. Real jobs still include both fields and are unaffected.
+    """
+    try:
+        from runpod.serverless.modules import rp_job
+    except ImportError:
+        return
+
+    original_get_job = rp_job.get_job
+
+    async def get_job_tolerant(session, num_jobs: int = 1):
+        try:
+            return await original_get_job(session, num_jobs)
+        except Exception as exc:
+            if "missing field(s): id or input" in str(exc):
+                logger.debug("Ignoring empty job-take payload (FlashBoot/idle poll)")
+                return None
+            raise
+
+    rp_job.get_job = get_job_tolerant
+    try:
+        from runpod.serverless.modules import rp_scale
+
+        rp_scale.get_job = get_job_tolerant
+    except Exception:
+        pass
+
+
 def main() -> None:
     settings = get_settings()
     engine = get_speech_engine()
@@ -260,6 +295,13 @@ def main() -> None:
     if not engine.is_ready():
         raise SystemExit(f"Worker not ready: {engine.status()}")
     logger.info("Worker ready: %s", engine.status())
+    if os.environ.get("RUNPOD_POD_ID"):
+        logger.warning(
+            "RunPod serverless: set endpoint Execution timeout to at least 120s "
+            "(default 30s causes 'job timed out after 1 retries'). "
+            "Endpoint → Edit → Job timeout / Execution timeout."
+        )
+    _patch_runpod_empty_job_poll()
     runpod.serverless.start({"handler": handler})
 
 

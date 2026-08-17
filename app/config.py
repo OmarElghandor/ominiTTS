@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     OUTPUT_FORMAT: str = "wav"
     SPEECH_PROVIDER: str = "voicetut"
     DEFAULT_SPEAKER: str = "Mohamed"
+    # Default diffusion steps when clients omit num_step (16 = faster; 32 = higher quality).
+    DEFAULT_NUM_STEP: int = 16
     WARMUP_TEXT: str = "ازيك عامل ايه؟"
     READY_MARKER_PATH: str = "/tmp/omnivoice-ready"
     # If 1, first worker downloads weights into MODEL_STORE_DIR when empty (~3.5 GB, slow).

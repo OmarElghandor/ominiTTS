@@ -91,6 +91,7 @@ ENV MODEL_STORE_DIR=/runpod-volume/omnivoice-model \
     OUTPUT_FORMAT=wav \
     SPEECH_PROVIDER=voicetut \
     DEFAULT_SPEAKER=Mohamed \
+    DEFAULT_NUM_STEP=16 \
     WARMUP_TEXT="ازيك عامل ايه؟" \
     MODEL_NAME=mohammedaly22/VoiceTut-TTS \
     READY_MARKER_PATH=/tmp/omnivoice-ready \

@@ -85,15 +85,20 @@ Default `docker build` (no `--target`) still produces the FastAPI/Pod image.
 
 ## 3. Endpoint settings
 
+> **Critical:** RunPod’s default **execution timeout is ~30 seconds**. VoiceTut cold start +
+> synthesis often exceeds that. If jobs fail with `job timed out after 1 retries` and
+> `executionTime` ≈ 30000–32000 ms, raise **Execution timeout** to **120–300 s** in the
+> endpoint editor (not only idle timeout).
+
 | Setting | Value |
 |---------|--------|
 | Image | `<registry>/omnivoice-serverless:latest` |
-| GPU | **16 GB+ VRAM** |
-| Active workers | **0** (on-demand) |
+| GPU | **16 GB+ VRAM** (RTX 4090 / A5000 / T4 minimum) |
+| Active workers | **0** (on-demand) or **1** (avoid cold-start timeouts while testing) |
 | Max workers | 1–2 |
 | Idle timeout | **60–300 s** |
-| Execution timeout | **120–300 s** |
-| FlashBoot | **On** |
+| **Execution timeout** | **120–300 s** (required — do not leave at 30 s) |
+| FlashBoot | **On** (optional). Idle polls may log `Failed to get job … id or input`; that is SDK noise, not a missing request id. Disable FlashBoot if the spam is noisy. |
 | Network Volume | Attached |
 
 ### Environment
@@ -106,13 +111,15 @@ Default `docker build` (no `--target`) still produces the FastAPI/Pod image.
 | `MAX_CONCURRENT_REQUESTS` | `1` |
 | `MAX_QUEUE_SIZE` | `8` |
 | `REQUEST_TIMEOUT` | `120` |
+| `DEFAULT_NUM_STEP` | `16` (serverless default when client omits `num_step`) |
 | `LOG_LEVEL` | `INFO` |
 | `OUTPUT_FORMAT` | `wav` |
-| `SPEECH_PROVIDER` | `omnivoice` |
-| `WARMUP_TEXT` | `Hello` |
+| `SPEECH_PROVIDER` | `voicetut` |
+| `DEFAULT_SPEAKER` | `Mohamed` |
+| `WARMUP_TEXT` | `ازيك عامل ايه؟` |
 | `SKIP_RECURSIVE_CHOWN` | `1` (baked into image) |
 
-Startup sequence: CUDA init → load from volume → tokenizer → warmup `"Hello"` → write `/tmp/omnivoice-ready` → accept jobs. Missing model → **process exits**.
+Startup sequence: CUDA init → load from volume → tokenizer → warmup → write `/tmp/omnivoice-ready` → accept jobs. Missing model → **process exits**.
 
 ---
 
@@ -122,23 +129,23 @@ Startup sequence: CUDA init → load from volume → tokenizer → warmup `"Hell
 
 ```json
 {
-  "model": "omnivoice",
-  "voice": "default",
-  "input": "Hello world",
-  "language": "en",
-  "speed": 1.0,
-  "num_step": 32
+  "input": "ازيك عامل ايه؟",
+  "speaker": "Mohamed",
+  "language": "arz",
+  "num_step": 16
 }
 ```
 
 | Field | Role |
 |-------|------|
 | `input` | Text to speak (required). Legacy alias: `text` |
-| `voice` | `default` / `auto` → auto mode; other values → design instruct |
+| `speaker` | Built-in VoiceTut voice (`Mohamed`, `Asmaa`, …). Default: `DEFAULT_SPEAKER` |
+| `voice` | Alias for `speaker` when it matches a built-in name; else design `instruct` |
 | `instruct` | Explicit design mode |
 | `ref_audio` + `ref_text` | Clone mode (base64 audio) |
 | `mode` | Optional explicit `auto` / `design` / `clone` |
-| `language`, `speed`, `num_step`, `duration` | Generation params |
+| `language` | `arz` / `ar` / `en` |
+| `speed`, `num_step`, `duration` | Generation params (`num_step` default **16** on serverless) |
 
 ### Success output
 
@@ -166,7 +173,7 @@ Includes queue-full and timeout cases.
 curl -X POST "https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync" \
   -H "Authorization: Bearer $RUNPOD_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"input":{"model":"omnivoice","voice":"default","input":"Hello from OmniVoice."}}'
+  -d '{"input":{"input":"ازيك عامل ايه؟","speaker":"Mohamed","language":"arz","num_step":16}}'
 
 # Decode:
 jq -r '.output.audio_base64' response.json | base64 -d > out.wav
@@ -199,7 +206,15 @@ Each request emits one structured JSON log line with:
 
 ---
 
-## 8. Cold starts
+## 8. `Failed to get job … id or input`
+
+That log is **not** your TTS payload missing `id`. It comes from the RunPod Python SDK while the worker **polls** `/job-take` with no real job (especially with **FlashBoot**). `requestId` is `null` because no job was assigned.
+
+A real request has an `id` like `bf6e730f-…-e1` and then either succeeds or fails with a handler error / timeout. The worker swallows empty job-take payloads so they no longer surface as ERROR.
+
+---
+
+## 9. Cold starts
 
 With active workers = 0, the first request pays for container start + volume load + warmup. Mitigations: FlashBoot, Network Volume (no HF download), longer idle timeout, singleton model. Near-zero latency requires Active workers ≥ 1.
 
