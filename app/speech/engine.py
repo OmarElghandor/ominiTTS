@@ -59,6 +59,25 @@ class SpeechEngine:
     def clear_cuda_cache(self) -> None:
         self._manager.clear_cuda_cache()
 
+    def list_speakers(self) -> list[dict]:
+        """Return built-in speakers when the active provider supports them."""
+        if not self._manager.is_ready():
+            return []
+        provider = self._manager.provider
+        list_fn = getattr(provider, "list_speakers", None)
+        if not callable(list_fn):
+            return []
+        return list(list_fn())
+
+    def has_speaker(self, name_or_id: str) -> bool:
+        if not self._manager.is_ready():
+            return False
+        provider = self._manager.provider
+        has_fn = getattr(provider, "has_speaker", None)
+        if callable(has_fn):
+            return bool(has_fn(name_or_id))
+        return False
+
     def startup(self, settings: Settings | None = None, *, fail_fast: bool = True) -> None:
         """Load model + warmup once. fail_fast=True raises (serverless); False records error."""
         settings = settings or get_settings()

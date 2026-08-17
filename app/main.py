@@ -12,7 +12,14 @@ from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
-from app.schemas import AutoRequest, CloneRequest, DesignRequest, HealthResponse
+from app.schemas import (
+    AutoRequest,
+    CloneRequest,
+    DesignRequest,
+    HealthResponse,
+    SpeakerInfo,
+    SpeakersResponse,
+)
 from app.speech import (
     QueueFullError,
     RequestTimeoutError,
@@ -150,9 +157,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="OmniVoice TTS Service",
-    description="Self-hosted zero-shot TTS microservice wrapping k2-fsa/OmniVoice",
-    version="1.0.0",
+    title="VoiceTut TTS Service",
+    description=(
+        "Self-hosted Egyptian-Arabic TTS microservice wrapping VoiceTut-TTS "
+        "(fine-tuned OmniVoice) with built-in speakers, normalization, and cloning"
+    ),
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -210,6 +220,23 @@ async def readyz() -> HealthResponse | JSONResponse:
             content=payload.model_dump(),
         )
     return payload
+
+
+@app.get("/v1/speakers", response_model=SpeakersResponse)
+async def list_speakers() -> SpeakersResponse:
+    _require_model_ready()
+    settings = get_settings()
+    engine = get_speech_engine()
+    speakers = [
+        SpeakerInfo(
+            speaker_id=s.get("speaker_id", ""),
+            speaker_name=s.get("speaker_name", ""),
+            gender=s.get("gender", "") or "",
+            tags=list(s.get("tags") or []),
+        )
+        for s in engine.list_speakers()
+    ]
+    return SpeakersResponse(speakers=speakers, default_speaker=settings.DEFAULT_SPEAKER)
 
 
 @app.post("/v1/tts/clone")
@@ -275,11 +302,14 @@ async def tts_design(body: DesignRequest):
     _require_model_ready()
     _validate_text_length(body.text)
 
+    # Built-in speaker selection uses auto mode; free-text instruct uses design.
+    mode = "auto" if body.speaker and not body.instruct else "design"
     wav_bytes = await _synthesize(
         SpeechRequest(
             text=body.text,
-            mode="design",
+            mode=mode,
             instruct=body.instruct,
+            speaker=body.speaker,
             language=body.language,
             num_step=body.num_step,
             speed=body.speed,
@@ -298,6 +328,7 @@ async def tts_auto(body: AutoRequest):
         SpeechRequest(
             text=body.text,
             mode="auto",
+            speaker=body.speaker,
             language=body.language,
             num_step=body.num_step,
             speed=body.speed,

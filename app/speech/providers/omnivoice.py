@@ -141,13 +141,3 @@ class OmniVoiceProvider:
     def clear_cuda_cache(self) -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-
-def create_provider(name: str) -> OmniVoiceProvider:
-    key = (name or "omnivoice").strip().lower()
-    if key == "omnivoice":
-        return OmniVoiceProvider()
-    raise ValueError(
-        f"Unknown SPEECH_PROVIDER={name!r}. Supported: omnivoice "
-        "(future: qwen3-tts, cosyvoice, openai, azure, elevenlabs)"
-    )

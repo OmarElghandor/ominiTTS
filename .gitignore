@@ -13,3 +13,6 @@ venv/
 *.log
 models/
 weights/
+
+model-store/
+.venv-verify/

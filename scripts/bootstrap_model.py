@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bootstrap OmniVoice weights into MODEL_STORE_DIR.
+"""Bootstrap VoiceTut-TTS weights into MODEL_STORE_DIR.
 
 Manual:
   docker compose run --rm -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 \\
@@ -23,6 +23,7 @@ if str(_SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_ROOT))
 
 from app.model_store import (  # noqa: E402
+    DEFAULT_MODEL_NAME,
     dir_size_bytes,
     format_size,
     has_hf_cache_layout,
@@ -34,8 +35,16 @@ from app.model_store import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = os.environ.get("MODEL_NAME", "k2-fsa/OmniVoice")
+MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 AUDIO_TOKENIZER_REPO = "eustlb/higgs-audio-v2-tokenizer"
+
+# VoiceTut HF repo includes ~19 GB of training state — never download those.
+IGNORE_PATTERNS = [
+    "optimizer.bin",
+    "random_states_*",
+    "scheduler.bin",
+    "train_config.json",
+]
 
 
 def _download_kwargs() -> dict:
@@ -52,6 +61,7 @@ def _log_store_context(store_dir: Path, label: str) -> None:
     msg = (
         f"{label}\n"
         f"  MODEL_STORE_DIR:              {store_dir}\n"
+        f"  MODEL_NAME:                   {MODEL_NAME}\n"
         f"  On-disk size:                 {format_size(total)}\n"
         f"  Top-level ({len(top_level)}):  {', '.join(top_level) if top_level else '<empty>'}"
     )
@@ -75,12 +85,12 @@ def _clear_store_contents(store_dir: Path, reason: str) -> None:
 
 
 def _print_success_summary(store_dir: Path) -> None:
-    write_bootstrap_marker(store_dir)
+    write_bootstrap_marker(store_dir, MODEL_NAME)
     _log_store_context(store_dir, "Bootstrap complete.")
 
 
 def _fail_verification(store_dir: Path, context: str) -> int:
-    errors = verify_model_store(store_dir)
+    errors = verify_model_store(store_dir, model_name=MODEL_NAME)
     print(f"ERROR: {context}", file=sys.stderr)
     for error in errors:
         print(f"  - {error}", file=sys.stderr)
@@ -100,6 +110,8 @@ def _enable_hf_online() -> dict[str, str | None]:
     }
     os.environ["HF_HUB_OFFLINE"] = "0"
     os.environ["TRANSFORMERS_OFFLINE"] = "0"
+    # XET transfers can stall on some networks; classic HTTP is more reliable for bootstrap.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     try:
         import huggingface_hub.constants as hf_constants
 
@@ -139,11 +151,11 @@ def run_bootstrap(store_dir: Path | None = None) -> None:
                 target,
                 "HF cache_dir-style layout detected (models--* subfolders)",
             )
-        elif verify_model_store(target):
+        elif verify_model_store(target, model_name=MODEL_NAME):
             if any(target.iterdir()):
                 _clear_store_contents(
                     target,
-                    "incomplete or invalid model store (verification failed)",
+                    "incomplete, mismatched, or invalid model store (verification failed)",
                 )
         else:
             print("Valid model store already present — skipping download.")
@@ -151,6 +163,7 @@ def run_bootstrap(store_dir: Path | None = None) -> None:
             return
 
         print(f"Downloading {MODEL_NAME} into {target} ...")
+        print(f"  Ignoring training artifacts: {', '.join(IGNORE_PATTERNS)}")
         print(f"HF_HUB_OFFLINE={os.environ.get('HF_HUB_OFFLINE')!r} (online bootstrap)")
         if endpoint := os.environ.get("HF_ENDPOINT"):
             print(f"Using HF_ENDPOINT mirror: {endpoint}")
@@ -159,6 +172,7 @@ def run_bootstrap(store_dir: Path | None = None) -> None:
         snapshot_download(
             repo_id=MODEL_NAME,
             local_dir=str(target),
+            ignore_patterns=IGNORE_PATTERNS,
             **dl_kwargs,
         )
 
@@ -174,10 +188,20 @@ def run_bootstrap(store_dir: Path | None = None) -> None:
             )
 
         _log_store_context(target, "Post-download store state:")
-        errors = verify_model_store(target)
+        errors = verify_model_store(target, model_name=MODEL_NAME)
         if errors:
-            detail = "; ".join(errors)
-            raise RuntimeError(f"post-download verification failed: {detail}")
+            # Marker may be missing until success write — filter mismatch-on-missing-marker
+            # after files are present by writing then re-checking isn't needed; only
+            # structural errors should fail here. Marker mismatch only applies when a
+            # marker already exists for a different model.
+            structural = [
+                e
+                for e in errors
+                if not e.startswith("model mismatch:")
+            ]
+            if structural:
+                detail = "; ".join(structural)
+                raise RuntimeError(f"post-download verification failed: {detail}")
 
         _print_success_summary(target)
     finally:

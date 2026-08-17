@@ -17,12 +17,14 @@ class SpeechRequest:
     num_step: int = 32
     duration: float | None = None
     instruct: str | None = None
+    speaker: str | None = None
     ref_audio: bytes | None = None
     ref_text: str | None = None
     ref_audio_suffix: str = ".wav"
     voice: str | None = None
     model: str | None = None
     request_id: str | None = None
+    normalize: bool = True
 
 
 @dataclass(slots=True)

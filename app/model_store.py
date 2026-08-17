@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 BOOTSTRAP_COMPLETE_MARKER = ".omnivoice-bootstrap-complete"
+DEFAULT_MODEL_NAME = "mohammedaly22/VoiceTut-TTS"
 
 REQUIRED_RELATIVE_PATHS = (
     "config.json",
@@ -14,6 +15,7 @@ REQUIRED_RELATIVE_PATHS = (
     "tokenizer_config.json",
     "audio_tokenizer/config.json",
     "audio_tokenizer/model.safetensors",
+    "reference_speakers/references.json",
 )
 
 MIN_FILE_BYTES: dict[str, int] = {
@@ -23,8 +25,10 @@ MIN_FILE_BYTES: dict[str, int] = {
 
 BOOTSTRAP_RERUN_MSG = (
     "MODEL_STORE_DIR failed verification — re-run scripts/bootstrap_model.py against the "
-    "volume and wait for 'Bootstrap complete' (~3 GB)"
+    "volume and wait for 'Bootstrap complete' (~3.5 GB)"
 )
+
+REFERENCE_AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 
 
 def resolve_model_store_dir() -> Path:
@@ -62,7 +66,22 @@ def format_size(num_bytes: int) -> str:
     return f"{size:.1f} GB"
 
 
-def verify_model_store(store_dir: Path) -> list[str]:
+def expected_model_name() -> str:
+    return os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME).strip() or DEFAULT_MODEL_NAME
+
+
+def read_bootstrap_marker_repo(store_dir: Path) -> str | None:
+    marker = store_dir / BOOTSTRAP_COMPLETE_MARKER
+    if not marker.is_file():
+        return None
+    for line in marker.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("model_name="):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
+def verify_model_store(store_dir: Path, *, model_name: str | None = None) -> list[str]:
     """Return human-readable errors; empty list means the store is usable."""
     errors: list[str] = []
     for rel in REQUIRED_RELATIVE_PATHS:
@@ -76,6 +95,32 @@ def verify_model_store(store_dir: Path) -> list[str]:
                 errors.append(
                     f"undersized: {rel} ({format_size(size)}, need >= {format_size(min_bytes)})"
                 )
+
+    refs_dir = store_dir / "reference_speakers"
+    if refs_dir.is_dir():
+        has_audio = any(
+            p.is_file() and p.suffix.lower() in REFERENCE_AUDIO_SUFFIXES
+            for p in refs_dir.iterdir()
+        )
+        if not has_audio:
+            errors.append("missing: reference_speakers/* audio file")
+    else:
+        # Already reported via references.json missing, but keep explicit.
+        if "missing: reference_speakers/references.json" not in errors:
+            errors.append("missing: reference_speakers/")
+
+    expected = model_name or expected_model_name()
+    marker_repo = read_bootstrap_marker_repo(store_dir)
+    if marker_repo is not None and marker_repo != expected:
+        errors.append(
+            f"model mismatch: store marked as {marker_repo!r}, expected {expected!r}"
+        )
+    elif marker_repo is None and (store_dir / BOOTSTRAP_COMPLETE_MARKER).is_file():
+        # Legacy marker from base OmniVoice bootstrap — force re-seed for VoiceTut.
+        errors.append(
+            f"model mismatch: legacy bootstrap marker (no model_name); expected {expected!r}"
+        )
+
     return errors
 
 
@@ -107,9 +152,10 @@ def list_top_level_entries(store_dir: Path) -> list[str]:
     )
 
 
-def write_bootstrap_marker(store_dir: Path) -> None:
+def write_bootstrap_marker(store_dir: Path, model_name: str | None = None) -> None:
+    repo = model_name or expected_model_name()
     (store_dir / BOOTSTRAP_COMPLETE_MARKER).write_text(
-        f"verified ok at {store_dir.resolve()}\n",
+        f"verified ok at {store_dir.resolve()}\nmodel_name={repo}\n",
         encoding="utf-8",
     )
 

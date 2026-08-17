@@ -79,6 +79,7 @@ def _parse_generation_params(job_input: dict[str, Any]) -> dict[str, Any]:
 
 def job_input_to_speech_request(job_input: dict[str, Any]) -> SpeechRequest:
     """Map OpenAI-compatible (+ extensions / legacy) job input to SpeechRequest."""
+    settings = get_settings()
     text = job_input.get("input")
     if text is None:
         text = job_input.get("text")  # legacy alias
@@ -88,6 +89,7 @@ def job_input_to_speech_request(job_input: dict[str, Any]) -> SpeechRequest:
     params = _parse_generation_params(job_input)
     model = _optional_str(job_input.get("model"), "model")
     voice = _optional_str(job_input.get("voice"), "voice")
+    speaker = _optional_str(job_input.get("speaker"), "speaker")
     explicit_mode = job_input.get("mode")
     instruct = _optional_str(job_input.get("instruct"), "instruct")
     ref_audio_b64 = job_input.get("ref_audio")
@@ -95,6 +97,12 @@ def job_input_to_speech_request(job_input: dict[str, Any]) -> SpeechRequest:
 
     mode: SpeechMode
     ref_audio: bytes | None = None
+    engine = get_speech_engine()
+
+    def _is_builtin_speaker(name: str | None) -> bool:
+        if not name:
+            return False
+        return engine.has_speaker(name)
 
     if ref_audio_b64 is not None:
         mode = "clone"
@@ -102,24 +110,42 @@ def job_input_to_speech_request(job_input: dict[str, Any]) -> SpeechRequest:
     elif explicit_mode in {"auto", "design", "clone"}:
         mode = explicit_mode  # type: ignore[assignment]
         if mode == "design":
-            instruct = instruct or voice
-            if not instruct:
-                raise ValueError("instruct (or voice) is required for design mode")
+            if not instruct and not speaker:
+                # voice may be a design instruct string or a built-in speaker name
+                if voice and _is_builtin_speaker(voice):
+                    speaker = voice
+                    mode = "auto"
+                else:
+                    instruct = instruct or voice
+                    if not instruct:
+                        raise ValueError("instruct (or voice/speaker) is required for design mode")
+            elif speaker and not instruct:
+                mode = "auto"
         if mode == "clone":
             raise ValueError("ref_audio is required for clone mode")
     elif instruct:
         mode = "design"
-    elif voice and voice.lower() not in {"default", "auto"}:
+    elif speaker:
+        mode = "auto"
+    elif voice and voice.lower() in {"default", "auto"}:
+        mode = "auto"
+        speaker = settings.DEFAULT_SPEAKER
+    elif voice and _is_builtin_speaker(voice):
+        mode = "auto"
+        speaker = voice
+    elif voice:
         mode = "design"
         instruct = voice
     else:
         mode = "auto"
+        speaker = settings.DEFAULT_SPEAKER
 
     return SpeechRequest(
         text=text.strip(),
         mode=mode,
         model=model,
         voice=voice,
+        speaker=speaker,
         instruct=instruct,
         ref_audio=ref_audio,
         ref_text=ref_text,

@@ -5,4 +5,4 @@ python-multipart>=0.0.9
 soundfile>=0.12.0
 numpy>=1.26.0
 runpod~=1.7.0
-# torch, torchaudio, and omnivoice are installed in the Dockerfile with pinned versions
+# torch, torchaudio, omnivoice, and voicetut-tts are installed in the Dockerfile with pinned versions

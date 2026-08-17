@@ -13,7 +13,7 @@ from app.config import Settings
 from app.metrics.collect import status_gpu_fields
 from app.model_store import verify_model_store
 from app.speech.provider import SpeechProvider
-from app.speech.providers.omnivoice import create_provider
+from app.speech.providers import create_provider
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,7 @@ class ModelManager:
             env["HF_HUB_OFFLINE"] = "0"
             env["TRANSFORMERS_OFFLINE"] = "0"
             env["MODEL_STORE_DIR"] = str(store)
+            env["MODEL_NAME"] = settings.MODEL_NAME
             logger.info("Running bootstrap subprocess: %s", bootstrap_path)
             subprocess.run(
                 [sys.executable, str(bootstrap_path)],

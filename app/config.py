@@ -11,11 +11,11 @@ from app.model_store import assert_model_store_verified, resolve_model_store_dir
 logger = logging.getLogger(__name__)
 
 MODEL_STORE_EMPTY_MSG = (
-    "MODEL_STORE_DIR is empty — seed OmniVoice weights once onto the Network Volume, "
+    "MODEL_STORE_DIR is empty — seed VoiceTut-TTS weights once onto the Network Volume, "
     "then restart. On a RunPod Pod with the volume attached: "
     "bash scripts/bootstrap_runpod.sh "
     "(or: BOOTSTRAP_ONLY=1 with HF_HUB_OFFLINE=0 / TRANSFORMERS_OFFLINE=0). "
-    "Wait for 'Bootstrap complete' (~3 GB). "
+    "Wait for 'Bootstrap complete' (~3.5 GB). "
     "Serverless expects MODEL_STORE_DIR=/runpod-volume/omnivoice-model; "
     "Pod/compose uses /data/omnivoice-model → host /workspace/omnivoice-model."
 )
@@ -24,7 +24,7 @@ MODEL_STORE_EMPTY_MSG = (
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    MODEL_NAME: str = "k2-fsa/OmniVoice"
+    MODEL_NAME: str = "mohammedaly22/VoiceTut-TTS"
     MODEL_STORE_DIR: str = "/data/omnivoice-model"
     DEVICE: str = "cuda:0"
     DTYPE: str | None = None
@@ -36,10 +36,11 @@ class Settings(BaseSettings):
     REQUEST_TIMEOUT: float = 120.0
     LOG_LEVEL: str = "INFO"
     OUTPUT_FORMAT: str = "wav"
-    SPEECH_PROVIDER: str = "omnivoice"
-    WARMUP_TEXT: str = "Hello"
+    SPEECH_PROVIDER: str = "voicetut"
+    DEFAULT_SPEAKER: str = "Mohamed"
+    WARMUP_TEXT: str = "ازيك عامل ايه؟"
     READY_MARKER_PATH: str = "/tmp/omnivoice-ready"
-    # If 1, first worker downloads weights into MODEL_STORE_DIR when empty (~3 GB, slow).
+    # If 1, first worker downloads weights into MODEL_STORE_DIR when empty (~3.5 GB, slow).
     BOOTSTRAP_IF_EMPTY: bool = False
 
     def resolve_model_path(self) -> Path:

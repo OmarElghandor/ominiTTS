@@ -25,7 +25,7 @@ RUN pip install \
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt && \
-    pip install omnivoice==0.1.5
+    pip install omnivoice==0.2.1 voicetut-tts==0.1.1
 
 FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04 AS runtime
 
@@ -89,8 +89,10 @@ ENV MODEL_STORE_DIR=/runpod-volume/omnivoice-model \
     REQUEST_TIMEOUT=120 \
     LOG_LEVEL=INFO \
     OUTPUT_FORMAT=wav \
-    SPEECH_PROVIDER=omnivoice \
-    WARMUP_TEXT=Hello \
+    SPEECH_PROVIDER=voicetut \
+    DEFAULT_SPEAKER=Mohamed \
+    WARMUP_TEXT="ازيك عامل ايه؟" \
+    MODEL_NAME=mohammedaly22/VoiceTut-TTS \
     READY_MARKER_PATH=/tmp/omnivoice-ready \
     BOOTSTRAP_IF_EMPTY=1
 

@@ -1,6 +1,6 @@
-# OmniVoice TTS Service
+# VoiceTut TTS Service
 
-Standalone HTTP microservice wrapping [OmniVoice](https://github.com/k2-fsa/OmniVoice) — a zero-shot, 600+ language voice cloning TTS model — for use in **Langify** (AI-first English learning app for Arabic speakers).
+Standalone HTTP microservice wrapping [VoiceTut-TTS](https://github.com/MohammedAly22/VoiceTuT-TTS) — an Egyptian-Arabic fine-tune of [OmniVoice](https://github.com/k2-fsa/OmniVoice) with built-in studio speakers, Arabic text normalization, and Arabic ↔ English code-switching — for use in **Langify** (AI-first English learning app for Arabic speakers).
 
 This service is the **self-hosted tier** in Langify's TTS architecture:
 
@@ -8,7 +8,7 @@ This service is the **self-hosted tier** in Langify's TTS architecture:
 |------|----------|----------|
 | Static / template audio | ElevenLabs | Pre-generated lesson content |
 | Dynamic / LLM content | Azure TTS | Real-time lesson narration |
-| Self-hosted (scale path) | **This service** | Cost control at scale (Groq API → RunPod Serverless → dedicated GPU) |
+| Self-hosted (scale path) | **This service (VoiceTut)** | Egyptian Arabic + code-switching at scale |
 
 **This service is NOT wired into the Langify Node/Express backend yet.** A follow-up task will add it as a provider option in the backend TTS router.
 
@@ -16,7 +16,7 @@ This service is the **self-hosted tier** in Langify's TTS architecture:
 
 ## Architecture: SpeechEngine + offline bootstrap
 
-Inference is provider-agnostic. Entrypoints call **SpeechEngine** only — never OmniVoice directly — so backends can be swapped later (`SPEECH_PROVIDER`) without changing FastAPI routes or the RunPod handler.
+Inference is provider-agnostic. Entrypoints call **SpeechEngine** only — never the model library directly — so backends can be swapped later (`SPEECH_PROVIDER`) without changing FastAPI routes or the RunPod handler.
 
 ```
   FastAPI (app/main.py)  ─┐
@@ -27,12 +27,12 @@ Inference is provider-agnostic. Entrypoints call **SpeechEngine** only — never
                                          │
                                    SpeechProvider
                                          │
-                                   OmniVoice (today)
+                                   VoiceTut (default) / OmniVoice
 ```
 
 Production containers **never contact huggingface.co**. Weights are downloaded once via `scripts/bootstrap_model.py` into a persistent volume (`MODEL_STORE_DIR`), then loaded offline with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`.
 
-The bootstrap script uses `snapshot_download(local_dir=...)` so files land **flat** at the volume root. Do **not** use `cache_dir`.
+The bootstrap script uses `snapshot_download(local_dir=..., ignore_patterns=[training artifacts])` so files land **flat** at the volume root. Do **not** use `cache_dir`. Training state (`optimizer.bin`, `random_states_*`, …) is excluded (~19 GB).
 
 ```
   [One-time]  bootstrap_model.py  ──►  MODEL_STORE_DIR (volume)
@@ -48,7 +48,7 @@ The bootstrap script uses `snapshot_download(local_dir=...)` so files land **fla
 | **FastAPI / Pod** | Always-on GPU, raw WAV HTTP | [`deploy/runpod/README.md`](deploy/runpod/README.md) |
 | **RunPod Serverless** | On-demand scale-to-zero, base64 JSON | [`deploy/runpod/serverless.md`](deploy/runpod/serverless.md) |
 
-Re-run bootstrap only when upgrading checkpoints — not on every deploy.
+Re-run bootstrap only when upgrading checkpoints — not on every deploy. Switching from the base `k2-fsa/OmniVoice` store to VoiceTut forces a one-time re-bootstrap (marker + `reference_speakers/` checks).
 
 ---
 
@@ -98,7 +98,7 @@ MODEL_STORE_DIR=./model-store python scripts/bootstrap_model.py
 
 If Hugging Face is slow or blocked from your network, set `HF_ENDPOINT` (e.g. `https://hf-mirror.com`) for the bootstrap step only.
 
-On success, bootstrap prints total on-disk size (~3.27 GB) and a top-level file listing. It verifies `config.json`, `model.safetensors`, tokenizer files, and `audio_tokenizer/{config.json, model.safetensors}` before declaring success. Re-running against a valid store is safe — it skips the download and reprints the summary.
+On success, bootstrap prints total on-disk size (~3.5 GB) and a top-level file listing. It verifies `config.json`, `model.safetensors`, tokenizer files, `audio_tokenizer/{config.json, model.safetensors}`, and `reference_speakers/references.json` (+ at least one reference audio) before declaring success. Re-running against a valid store for the same `MODEL_NAME` is safe — it skips the download and reprints the summary.
 
 ### 2. Run the API
 
@@ -128,6 +128,7 @@ For CPU-only testing, set `DEVICE=cpu`. If CUDA is requested but unavailable, th
 |----------|---------|
 | `GET /healthz` | Process is up (returns 200 even while model is loading) |
 | `GET /readyz` | Model finished loading (503 until ready) |
+| `GET /v1/speakers` | Built-in VoiceTut speakers (name, gender, tags) |
 | `POST /v1/tts/*` | TTS synthesis (no auth — internal/trusted network only) |
 
 ```bash
@@ -149,6 +150,14 @@ Successful TTS responses return **24 kHz mono WAV** (`Content-Type: audio/wav`).
 
 All error responses (non-audio) return JSON with a `message` field.
 
+**Language support:** VoiceTut accepts Egyptian Arabic (`arz` / `ar`) and English (`en`) only. Other language codes are rejected.
+
+Egyptian Arabic input is normalized by default (numbers, dates, times, currencies, phones, names).
+
+### `GET /v1/speakers` — Built-in voices
+
+Returns the 17 studio speakers shipped with VoiceTut-TTS (e.g. `Mohamed`, `Asmaa`, `Sayed`) plus `default_speaker`.
+
 ### `POST /v1/tts/clone` — Voice cloning
 
 Clone a voice from a short reference clip (3–10 s recommended).
@@ -157,10 +166,10 @@ Clone a voice from a short reference clip (3–10 s recommended).
 
 ```json
 {
-  "text": "Hello, this is a cloned voice.",
+  "text": "ازيك عامل ايه النهاردة؟",
   "ref_audio": "<base64-encoded audio>",
   "ref_text": "Transcript of the reference audio.",
-  "language": "en",
+  "language": "arz",
   "num_step": 32,
   "speed": 1.0,
   "duration": null
@@ -169,32 +178,41 @@ Clone a voice from a short reference clip (3–10 s recommended).
 
 **Multipart form:** fields `text`, `ref_audio` (file), optional `ref_text`, `language`, `num_step`, `speed`, `duration`.
 
-If `ref_text` is omitted, OmniVoice auto-transcribes via Whisper (slower — a warning is logged server-side).
+If `ref_text` is omitted, auto-transcription requires ASR (disabled offline with `load_asr=False` — provide `ref_text`).
 
-### `POST /v1/tts/design` — Voice design
+### `POST /v1/tts/design` — Voice design or built-in speaker
 
-Synthesize with a described voice (no reference audio).
+Synthesize with a described voice (`instruct`) **or** a built-in `speaker` (mutually exclusive).
 
 ```json
 {
-  "text": "Hello, this is a designed voice.",
-  "instruct": "female, young adult, high pitch, british accent",
-  "language": "en",
+  "text": "عندي meeting الساعة 3:30",
+  "instruct": "female, young adult, egyptian accent",
+  "language": "arz",
   "num_step": 32,
   "speed": 1.0
 }
 ```
 
-`instruct` is a comma-separated attribute string per [OmniVoice voice design docs](https://github.com/k2-fsa/OmniVoice/blob/master/docs/voice-design.md).
-
-### `POST /v1/tts/auto` — Auto voice
-
-No reference audio or voice description — the model picks a voice.
+Or:
 
 ```json
 {
-  "text": "This sentence uses an automatically chosen voice.",
-  "language": "en",
+  "text": "ازيك عامل ايه؟",
+  "speaker": "Asmaa",
+  "language": "arz"
+}
+```
+
+### `POST /v1/tts/auto` — Built-in speaker (default)
+
+Uses `speaker` when provided; otherwise falls back to `DEFAULT_SPEAKER` (default `Mohamed`).
+
+```json
+{
+  "text": "ازيك عامل ايه النهاردة؟",
+  "speaker": "Mohamed",
+  "language": "arz",
   "num_step": 32,
   "speed": 1.0
 }
@@ -207,14 +225,15 @@ No reference audio or voice description — the model picks a voice.
 | `num_step` | `32` | Diffusion steps (`16` for faster inference) |
 | `speed` | `1.0` | Speech rate multiplier |
 | `duration` | `null` | Fixed output length in seconds (overrides `speed`) |
-| `language` | `null` | Optional language hint (e.g. `"en"`) |
+| `language` | `arz` | `arz`/`ar` (Egyptian Arabic) or `en` |
+| `speaker` | `DEFAULT_SPEAKER` | Built-in VoiceTut speaker name |
 
 ### Example (curl)
 
 ```bash
 curl -X POST http://localhost:8080/v1/tts/auto \
   -H "Content-Type: application/json" \
-  -d '{"text": "Hello from OmniVoice."}' \
+  -d '{"text": "ازيك عامل ايه؟", "speaker": "Mohamed", "language": "arz"}' \
   --output out.wav
 ```
 
@@ -224,7 +243,7 @@ curl -X POST http://localhost:8080/v1/tts/auto \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MODEL_NAME` | `k2-fsa/OmniVoice` | HF repo id — **bootstrap only** |
+| `MODEL_NAME` | `mohammedaly22/VoiceTut-TTS` | HF repo id — **bootstrap only** |
 | `MODEL_STORE_DIR` | `/data/omnivoice-model` | Local weights path (serverless: `/runpod-volume/omnivoice-model`) |
 | `OMNIVOICE_VOLUME_HOST_PATH` | `/workspace/omnivoice-model` | Compose bind mount host path |
 | `DEVICE` | `cuda:0` | Inference device |
@@ -236,8 +255,9 @@ curl -X POST http://localhost:8080/v1/tts/auto \
 | `REQUEST_TIMEOUT` | `120` | Per-request timeout (seconds) |
 | `LOG_LEVEL` | `INFO` | Log level |
 | `OUTPUT_FORMAT` | `wav` | Engine output container |
-| `SPEECH_PROVIDER` | `omnivoice` | Provider registry key |
-| `WARMUP_TEXT` | `Hello` | Startup warmup utterance |
+| `SPEECH_PROVIDER` | `voicetut` | Provider registry key (`voicetut` or `omnivoice`) |
+| `DEFAULT_SPEAKER` | `Mohamed` | Built-in speaker for auto/warmup fallback |
+| `WARMUP_TEXT` | `ازيك عامل ايه؟` | Startup warmup utterance |
 | `PORT` | `8080` | FastAPI HTTP port |
 
 See [`.env.example`](.env.example) for a template.
@@ -426,7 +446,8 @@ omnivoice-service/
 │   │   ├── provider.py         # SpeechProvider protocol
 │   │   ├── types.py
 │   │   └── providers/
-│   │       └── omnivoice.py    # OmniVoice backend
+│   │       ├── omnivoice.py    # Base OmniVoice backend
+│   │       └── voicetut.py     # VoiceTut-TTS (default)
 │   ├── metrics/                # Structured JSON request metrics
 │   ├── utils/audio.py
 │   ├── model_store.py
@@ -448,4 +469,4 @@ omnivoice-service/
 
 ## License
 
-OmniVoice model and library: see [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice). This wrapper service is part of the Langify project infrastructure.
+VoiceTut-TTS: [MohammedAly22/VoiceTuT-TTS](https://github.com/MohammedAly22/VoiceTuT-TTS) (Apache-2.0). Base model/library: [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice). This wrapper service is part of the Langify project infrastructure.
