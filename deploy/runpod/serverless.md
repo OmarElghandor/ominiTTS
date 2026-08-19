@@ -125,14 +125,31 @@ Startup sequence: CUDA init → load from volume → tokenizer → warmup → wr
 
 ## 4. Request / response contract
 
-### OpenAI-compatible input
+The RunPod **Requests** tab already wraps whatever you paste as the job `input`. Paste the inner object only (do **not** wrap again in `"input"`):
 
 ```json
 {
-  "input": "ازيك عامل ايه؟",
+  "text": "ازيك عامل ايه؟",
   "speaker": "Mohamed",
   "language": "arz",
   "num_step": 16
+}
+```
+
+`text` is accepted as an alias of `input`. Warmup logs (`ازيك عامل ايه؟`) are startup only — a real job logs `Job <id> received payload` and the spoken text.
+
+### OpenAI-compatible input (curl /runsync)
+
+The HTTP body still needs the outer RunPod `"input"` wrapper:
+
+```json
+{
+  "input": {
+    "input": "ازيك عامل ايه؟",
+    "speaker": "Mohamed",
+    "language": "arz",
+    "num_step": 16
+  }
 }
 ```
 
@@ -208,9 +225,14 @@ Each request emits one structured JSON log line with:
 
 ## 8. `Failed to get job … id or input`
 
-That log is **not** your TTS payload missing `id`. It comes from the RunPod Python SDK while the worker **polls** `/job-take` with no real job (especially with **FlashBoot**). `requestId` is `null` because no job was assigned.
+That log is **not** your TTS payload missing a job id. It comes from the RunPod Python SDK while the worker **polls** `/job-take`.
 
-A real request has an `id` like `bf6e730f-…-e1` and then either succeeds or fails with a handler error / timeout. The worker swallows empty job-take payloads so they no longer surface as ERROR.
+- Empty FlashBoot polls (`{}`) have no `id` — ignored as “no job”.
+- The Requests tab may deliver `{ "id", "text", "speaker" }` without an `input` key. The worker now wraps those fields as `input` so the job reaches the handler. Logs should then show `Job <id> received payload` and `text='…'`.
+
+If jobs still fail at ~30s with `job timed out after 1 retries`, raise **Execution timeout** to **120–300 s**. That is separate from this payload issue.
+
+The Requests UI posts `/run` (async). The right-hand output pane stays empty until you poll `/status/<id>` or use `/runsync`.
 
 ---
 

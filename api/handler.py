@@ -199,13 +199,63 @@ def job_input_to_speech_request(job_input: dict[str, Any]) -> SpeechRequest:
     )
 
 
+_JOB_ENVELOPE_KEYS = {"id", "input", "webhook"}
+
+
+def _text_preview(text: str, limit: int = 80) -> str:
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[:limit] + "…"
+
+
 def _summarize_input(raw: Any) -> str:
     if isinstance(raw, str):
-        preview = raw[:80] + ("…" if len(raw) > 80 else "")
-        return f"str len={len(raw)} preview={preview!r}"
+        return f"str len={len(raw)} preview={_text_preview(raw)!r}"
     if isinstance(raw, dict):
-        return f"dict keys={sorted(raw.keys())}"
+        keys = sorted(raw.keys())
+        spoken = raw.get("input") or raw.get("text")
+        if isinstance(spoken, str) and spoken.strip():
+            return f"dict keys={keys} text={_text_preview(spoken)!r}"
+        return f"dict keys={keys}"
     return type(raw).__name__
+
+
+def _raw_job_payload(job: dict[str, Any]) -> Any:
+    """Prefer job['input']; fall back to top-level TTS fields (Requests tab)."""
+    raw = job.get("input")
+    if raw is not None:
+        return raw
+    leftover = {key: value for key, value in job.items() if key not in _JOB_ENVELOPE_KEYS}
+    if leftover:
+        logger.info(
+            "Job %s has no input key; using top-level fields %s",
+            job.get("id"),
+            sorted(leftover),
+        )
+        return leftover
+    return None
+
+
+def _ensure_job_input(data: Any) -> Any:
+    """Give job-take dicts an `input` key so the RunPod SDK accepts them."""
+    if isinstance(data, list):
+        return [_ensure_job_input(item) for item in data]
+    if not isinstance(data, dict):
+        return data
+    if "id" in data and "input" not in data:
+        payload = {
+            key: value
+            for key, value in data.items()
+            if key not in _JOB_ENVELOPE_KEYS
+        }
+        logger.info(
+            "Coerced job %s without input key: keys=%s",
+            data.get("id"),
+            sorted(payload),
+        )
+        return {"id": data["id"], "input": payload}
+    return data
 
 
 async def handler(job: dict[str, Any]) -> dict[str, Any]:
@@ -213,21 +263,24 @@ async def handler(job: dict[str, Any]) -> dict[str, Any]:
     if not engine.is_ready():
         return {"error": engine.get_load_error() or "Model is not ready"}
 
-    raw_input = job.get("input")
+    raw_input = _raw_job_payload(job)
     logger.info("Job %s received payload: %s", job.get("id"), _summarize_input(raw_input))
 
     try:
         job_input = normalize_job_input(raw_input)
         request = job_input_to_speech_request(job_input)
         logger.info(
-            "Synthesizing mode=%s speaker=%s chars=%s",
+            "Job %s synthesizing mode=%s speaker=%s chars=%s text=%r",
+            job.get("id"),
             request.mode,
             request.speaker,
             len(request.text),
+            _text_preview(request.text),
         )
         result = await engine.generate(request)
         logger.info(
-            "Synthesis complete: %.2fs audio, %s bytes",
+            "Job %s synthesis complete: %.2fs audio, %s bytes",
+            job.get("id"),
             result.duration_seconds,
             len(result.audio),
         )
@@ -255,12 +308,11 @@ async def handler(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _patch_runpod_empty_job_poll() -> None:
-    """Treat FlashBoot / empty job-take payloads as 'no job' instead of ERROR spam.
+    """Accept job-take payloads that have id but no input; ignore empty polls.
 
-    runpod-python 1.7.x raises Exception("Job has missing field(s): id or input.")
-    when /job-take returns a JSON object that is not a real job (common with
-    FlashBoot idle polls). The scaler then logs Failed to get job with
-    requestId=null. Real jobs still include both fields and are unaffected.
+    runpod-python 1.7.x requires both `id` and `input`. The Requests tab may
+    deliver `{id, text, speaker, ...}` without wrapping TTS fields in `input`.
+    Empty FlashBoot polls (`{}`) still lack `id` and are treated as no job.
     """
     try:
         from runpod.serverless.modules import rp_job
@@ -270,13 +322,29 @@ def _patch_runpod_empty_job_poll() -> None:
     original_get_job = rp_job.get_job
 
     async def get_job_tolerant(session, num_jobs: int = 1):
+        orig_get = session.get
+
+        async def patched_get(*args, **kwargs):
+            response = await orig_get(*args, **kwargs)
+            orig_json = response.json
+
+            async def patched_json(*json_args, **json_kwargs):
+                data = await orig_json(*json_args, **json_kwargs)
+                return _ensure_job_input(data)
+
+            response.json = patched_json
+            return response
+
         try:
+            session.get = patched_get
             return await original_get_job(session, num_jobs)
         except Exception as exc:
             if "missing field(s): id or input" in str(exc):
                 logger.debug("Ignoring empty job-take payload (FlashBoot/idle poll)")
                 return None
             raise
+        finally:
+            session.get = orig_get
 
     rp_job.get_job = get_job_tolerant
     try:
