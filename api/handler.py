@@ -82,18 +82,51 @@ def _parse_generation_params(job_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_TTS_PARAM_KEYS = frozenset(
+    {
+        "text",
+        "input",
+        "speaker",
+        "voice",
+        "language",
+        "instruct",
+        "mode",
+        "model",
+        "ref_audio",
+        "ref_text",
+        "num_step",
+        "speed",
+        "duration",
+    }
+)
+
+
+def _spoken_text_from_dict(payload: dict[str, Any]) -> str | None:
+    """Return the first non-empty spoken-text string from common field names."""
+    for key in ("text", "input"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        if isinstance(val, dict):
+            inner = val.get("text") or val.get("input")
+            if isinstance(inner, str) and inner.strip():
+                return inner.strip()
+    return None
+
+
 def normalize_job_input(raw: Any) -> dict[str, Any]:
     """Accept RunPod / console payload variants and return a flat params dict.
 
     Supported shapes (after RunPod unwraps the outer job envelope):
+      {"text": "hello", "speaker": "Mohamed"}     # Requests tab
       {"input": "hello"}                          # text only
       {"input": "hello", "speaker": "Mohamed"}    # OpenAI-style
-      {"text": "hello", "speaker": "Mohamed"}     # legacy
-      {"input": {"input": "hello", ...}}          # double-wrapped curl body in console
+      {"input": {"input": "hello", ...}}          # double-wrapped curl body
+      {"input": "", "text": "hello", ...}         # empty input + text alias
     """
     if raw is None:
         raise ValueError(
-            "input is required. Send {\"input\": {\"input\": \"your text\", \"speaker\": \"Mohamed\"}}"
+            'text or input is required. Example: {"text": "ازيك؟", "speaker": "Mohamed", "language": "arz"}'
         )
     if isinstance(raw, str):
         text = raw.strip()
@@ -108,23 +141,26 @@ def normalize_job_input(raw: Any) -> dict[str, Any]:
     payload = dict(raw)
     nested = payload.get("input")
     if isinstance(nested, dict):
-        # Console pasted the full curl body → job.input.input is another object.
         payload = {**payload, **nested}
+
+    spoken = _spoken_text_from_dict(payload)
+    if spoken is None:
+        raise ValueError(
+            'text or input is required (non-empty string). Example: '
+            '{"text": "صباح الخير", "speaker": "Mohamed", "language": "arz"}'
+        )
+    payload["input"] = spoken
     return payload
 
 
 def _extract_text(job_input: dict[str, Any]) -> str:
-    text = job_input.get("input")
-    if isinstance(text, dict):
-        text = text.get("input") or text.get("text")
-    if text is None:
-        text = job_input.get("text")
-    if not isinstance(text, str) or not text.strip():
+    spoken = _spoken_text_from_dict(job_input)
+    if spoken is None:
         raise ValueError(
-            "input is required (string). Example: "
-            '{"input": {"input": "ازيك عامل ايه؟", "speaker": "Mohamed", "language": "arz"}}'
+            'text or input is required (non-empty string). Example: '
+            '{"text": "صباح الخير", "speaker": "Mohamed", "language": "arz"}'
         )
-    return text.strip()
+    return spoken
 
 
 def job_input_to_speech_request(job_input: dict[str, Any]) -> SpeechRequest:
@@ -214,27 +250,37 @@ def _summarize_input(raw: Any) -> str:
         return f"str len={len(raw)} preview={_text_preview(raw)!r}"
     if isinstance(raw, dict):
         keys = sorted(raw.keys())
-        spoken = raw.get("input") or raw.get("text")
-        if isinstance(spoken, str) and spoken.strip():
+        spoken = _spoken_text_from_dict(raw)
+        if spoken:
             return f"dict keys={keys} text={_text_preview(spoken)!r}"
         return f"dict keys={keys}"
     return type(raw).__name__
 
 
 def _raw_job_payload(job: dict[str, Any]) -> Any:
-    """Prefer job['input']; fall back to top-level TTS fields (Requests tab)."""
+    """Prefer job['input']; merge top-level TTS fields when input is empty."""
+    top = {key: value for key, value in job.items() if key not in _JOB_ENVELOPE_KEYS}
     raw = job.get("input")
-    if raw is not None:
-        return raw
-    leftover = {key: value for key, value in job.items() if key not in _JOB_ENVELOPE_KEYS}
-    if leftover:
-        logger.info(
-            "Job %s has no input key; using top-level fields %s",
-            job.get("id"),
-            sorted(leftover),
-        )
-        return leftover
-    return None
+
+    if raw is None:
+        return top or None
+
+    if isinstance(raw, dict):
+        merged = {**raw, **top}
+        if _spoken_text_from_dict(merged) is None and top:
+            logger.info(
+                "Job %s merging top-level fields into input: %s",
+                job.get("id"),
+                sorted(top),
+            )
+        return merged
+
+    if isinstance(raw, str):
+        if raw.strip():
+            return {**top, "input": raw.strip()}
+        return top or None
+
+    return raw
 
 
 def _ensure_job_input(data: Any) -> Any:
@@ -243,18 +289,47 @@ def _ensure_job_input(data: Any) -> Any:
         return [_ensure_job_input(item) for item in data]
     if not isinstance(data, dict):
         return data
-    if "id" in data and "input" not in data:
-        payload = {
-            key: value
-            for key, value in data.items()
-            if key not in _JOB_ENVELOPE_KEYS
-        }
+
+    if "id" not in data:
+        return data
+
+    top = {
+        key: value
+        for key, value in data.items()
+        if key not in _JOB_ENVELOPE_KEYS
+    }
+    inp = data.get("input")
+
+    if "input" not in data:
         logger.info(
             "Coerced job %s without input key: keys=%s",
             data.get("id"),
-            sorted(payload),
+            sorted(top),
         )
-        return {"id": data["id"], "input": payload}
+        return {"id": data["id"], "input": top}
+
+    if isinstance(inp, dict):
+        merged = {**inp, **top}
+        if merged != inp:
+            logger.info(
+                "Coerced job %s merged sibling fields into input: keys=%s",
+                data.get("id"),
+                sorted(merged),
+            )
+            return {"id": data["id"], "input": merged}
+        return data
+
+    if isinstance(inp, str) and inp.strip():
+        return data
+
+    if top:
+        logger.info(
+            "Coerced job %s empty input replaced with top-level fields: keys=%s",
+            data.get("id"),
+            sorted(top),
+        )
+        return {"id": data["id"], "input": top}
+
     return data
 
 
