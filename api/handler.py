@@ -307,6 +307,38 @@ async def handler(job: dict[str, Any]) -> dict[str, Any]:
         return {"error": f"Internal error: {type(exc).__name__}: {exc}"}
 
 
+def _patch_json_on_response(response: Any) -> Any:
+    orig_json = response.json
+
+    async def patched_json(*json_args, **json_kwargs):
+        data = await orig_json(*json_args, **json_kwargs)
+        return _ensure_job_input(data)
+
+    response.json = patched_json
+    return response
+
+
+class _JobTakeGetWrapper:
+    """Preserve aiohttp `async with session.get(...)` while coercing job JSON."""
+
+    def __init__(self, cm: Any) -> None:
+        self._cm = cm
+
+    def __await__(self):
+        return self._await_response().__await__()
+
+    async def _await_response(self):
+        response = await self._cm
+        return _patch_json_on_response(response)
+
+    async def __aenter__(self):
+        response = await self._cm.__aenter__()
+        return _patch_json_on_response(response)
+
+    async def __aexit__(self, *exc: Any):
+        return await self._cm.__aexit__(*exc)
+
+
 def _patch_runpod_empty_job_poll() -> None:
     """Accept job-take payloads that have id but no input; ignore empty polls.
 
@@ -324,16 +356,8 @@ def _patch_runpod_empty_job_poll() -> None:
     async def get_job_tolerant(session, num_jobs: int = 1):
         orig_get = session.get
 
-        async def patched_get(*args, **kwargs):
-            response = await orig_get(*args, **kwargs)
-            orig_json = response.json
-
-            async def patched_json(*json_args, **json_kwargs):
-                data = await orig_json(*json_args, **json_kwargs)
-                return _ensure_job_input(data)
-
-            response.json = patched_json
-            return response
+        def patched_get(*args, **kwargs):
+            return _JobTakeGetWrapper(orig_get(*args, **kwargs))
 
         try:
             session.get = patched_get
